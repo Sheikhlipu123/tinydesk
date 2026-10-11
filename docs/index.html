@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
+<title>Tiny Desk – Anonymous notice board and message desk for Tor onion services (Flask + SQLite)</title>
+<meta name="description" content="Tiny Desk is a minimal, JavaScript-free, open-source notice board and anonymous message desk for Tor onion services. One Python file, Flask, SQLite, AES-256-GCM encryption.">
+<meta name="keywords" content="tor onion service, anonymous messaging, flask, sqlite, notice board, self-hosted, privacy, javascript-free, python, hidden service">
+<meta name="author" content="Sheikhlipu123">
+<meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1">
+<link rel="canonical" href="https://sheikhlipu123.github.io/tinydesk/">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Tiny Desk">
+<meta property="og:title" content="Tiny Desk – Anonymous notice board for Tor onion services">
+<meta property="og:description" content="Minimal, JavaScript-free notice board and anonymous message desk for Tor onion services. Flask + SQLite, one file.">
+<meta property="og:url" content="https://sheikhlipu123.github.io/tinydesk/">
+<meta property="og:image" content="https://sheikhlipu123.github.io/tinydesk/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+
+<!-- Twitter / X -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Tiny Desk – Anonymous notice board for Tor onion services">
+<meta name="twitter:description" content="JavaScript-free notice board and anonymous message desk for Tor. Flask + SQLite, one file.">
+<meta name="twitter:image" content="https://sheikhlipu123.github.io/tinydesk/og-image.png">
+
+<!-- Structured data for search engines and AI answer engines -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://sheikhlipu123.github.io/tinydesk/#software",
+      "name": "Tiny Desk",
+      "description": "Minimal JavaScript-free notice board and anonymous message desk for Tor onion services. Flask + SQLite.",
+      "codeRepository": "https://github.com/Sheikhlipu123/tinydesk",
+      "programmingLanguage": "Python",
+      "runtimePlatform": "Python 3.10+",
+      "author": { "@type": "Person", "name": "Sheikhlipu123", "url": "https://github.com/Sheikhlipu123" },
+      "keywords": "tor, onion service, anonymous messaging, flask, sqlite, notice board, privacy, self-hosted",
+      "url": "https://sheikhlipu123.github.io/tinydesk/"
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://sheikhlipu123.github.io/tinydesk/#website",
+      "url": "https://sheikhlipu123.github.io/tinydesk/",
+      "name": "Tiny Desk",
+      "inLanguage": "en"
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is Tiny Desk?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Tiny Desk is a minimal, JavaScript-free notice board and anonymous message desk for Tor onion services, built with Flask and SQLite in a single Python file." }
+        },
+        {
+          "@type": "Question",
+          "name": "Does Tiny Desk require JavaScript?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. Pages are server-rendered. Message threads refresh through a meta-refresh iframe." }
+        },
+        {
+          "@type": "Question",
+          "name": "Is Tiny Desk end-to-end encrypted?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. Messages are encrypted at rest with AES-256-GCM, but the operator can read them. Tor protects the transport." }
+        },
+        {
+          "@type": "Question",
+          "name": "Do visitors need an account?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. Visitors receive a Ticket and Key after sending a message. No account, e-mail or name is required." }
+        }
+      ]
+    }
+  ]
+}
+</script>
+
+<style>
+:root{--bg:#0f0e1f;--card:#18163a;--ink:#ece9ff;--mute:#a5a2d6;--pri:#8b7bff;--pri2:#6d5dfc;--line:#2c2862;--code:#0b0a1c;--r:14px}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:#b8adff}
+a:hover{color:#fff}
+.wrap{max-width:60rem;margin:0 auto;padding:0 1.25rem}
+header.top{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(15,14,31,.92);backdrop-filter:blur(6px);z-index:10}
+header.top .wrap{display:flex;justify-content:space-between;align-items:center;padding:.9rem 1.25rem;flex-wrap:wrap;gap:.6rem}
+.logo{font-weight:800;color:#fff;text-decoration:none;font-size:1.1rem}
+nav a{margin-left:1.1rem;text-decoration:none;color:var(--mute);font-size:.95rem}
+nav a:hover{color:#fff}
+.btn{display:inline-block;padding:.6rem 1.3rem;border-radius:999px;text-decoration:none;font-weight:600;border:1px solid var(--pri2);background:var(--pri2);color:#fff}
+.btn:hover{background:var(--pri);color:#fff}
+.btn.line{background:transparent;color:#d9d4ff;border-color:var(--line)}
+.btn.line:hover{border-color:var(--pri);color:#fff}
+.hero{padding:4.5rem 0 3rem;text-align:left}
+.eyebrow{display:inline-block;color:var(--pri);font-size:.85rem;letter-spacing:.12em;text-transform:uppercase;font-weight:700;margin-bottom:.8rem}
+h1{font-size:clamp(2.2rem,5vw,3.4rem);line-height:1.1;margin:0 0 1rem;color:#fff}
+.lead{font-size:1.2rem;color:var(--mute);max-width:44rem;margin:0 0 1.8rem}
+.cta{display:flex;gap:.7rem;flex-wrap:wrap}
+.badges{margin-top:1.4rem;display:flex;gap:.5rem;flex-wrap:wrap;font-size:.85rem;color:var(--mute)}
+.badges span{border:1px solid var(--line);border-radius:999px;padding:.2rem .75rem}
+section{padding:2.5rem 0;border-top:1px solid var(--line)}
+h2{font-size:1.6rem;color:#fff;margin:0 0 1rem}
+h3{font-size:1.1rem;color:#fff;margin:1.4rem 0 .4rem}
+p{margin:.6rem 0}
+.grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:1.2rem}
+.card h3{margin-top:0}
+.card p{color:var(--mute);font-size:.95rem;margin:0}
+ol.steps{padding-left:1.2rem}
+ol.steps li{margin:.6rem 0}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:1rem;overflow-x:auto;font-size:.9rem}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;color:#d6d0ff}
+p code,li code,td code{background:var(--code);padding:.1rem .35rem;border-radius:6px;font-size:.88em}
+table{width:100%;border-collapse:collapse;font-size:.92rem;margin:1rem 0}
+th,td{text-align:left;padding:.55rem .6rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:#fff}
+td{color:var(--mute)}
+.warn{border-left:4px solid #fb7185;background:var(--card);padding:1rem 1.2rem;border-radius:8px;margin:1rem 0}
+details{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:.8rem 1.1rem;margin:.6rem 0}
+summary{cursor:pointer;font-weight:600;color:#fff}
+details p{color:var(--mute)}
+footer{border-top:1px solid var(--line);padding:2rem 0;color:var(--mute);font-size:.9rem}
+footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem}
+@media (max-width:40rem){nav a{margin-left:.7rem}.hero{padding-top:2.5rem}}
+</style>
+</head>
+
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="/tinydesk/">◈ Tiny Desk</a>
+    <nav aria-label="Primary">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#security">Security</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/Sheikhlipu123/tinydesk">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero" style="border:0">
+  <div class="wrap">
+    <span class="eyebrow">Open source · Python · Tor</span>
+    <h1>Tiny Desk: an anonymous notice board and message desk for Tor onion services</h1>
+    <p class="lead">A minimal, JavaScript-free self-hosted app. Post notices and files, and let visitors send anonymous messages with no account, e-mail or name. One Python file, built on Flask and SQLite.</p>
+    <div class="cta">
+      <a class="btn" href="https://github.com/Sheikhlipu123/tinydesk">Star on GitHub</a>
+      <a class="btn line" href="#install">Install in 5 minutes</a>
+    </div>
+    <div class="badges" aria-label="Project highlights">
+      <span>Python 3.10+</span><span>Flask</span><span>SQLite</span><span>Tor onion service</span><span>No JavaScript</span><span>AES-256-GCM</span>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Features</h2>
+    <div class="grid">
+      <article class="card">
+        <h3>Notices</h3>
+        <p>Public posts with image or .txt attachments, optional countdown timers, draft and hide controls.</p>
+      </article>
+      <article class="card">
+        <h3>Anonymous messaging</h3>
+        <p>Visitors get a Ticket and Key. No account, e-mail or name. Messages are stored AES-256-GCM encrypted.</p>
+      </article>
+      <article class="card">
+        <h3>No JavaScript</h3>
+        <p>Server-rendered pages with a strict Content-Security-Policy. Threads refresh through a meta-refresh iframe.</p>
+      </article>
+      <article class="card">
+        <h3>Downloads</h3>
+        <p>Operator-uploaded files of any type, served as attachments.</p>
+      </article>
+      <article class="card">
+        <h3>Hardening</h3>
+        <p>CSRF tokens on every POST, Argon2 admin password, short-lived admin sessions, request size limits, rate limits, magic-byte checks on attachments.</p>
+      </article>
+      <article class="card">
+        <h3>Housekeeping</h3>
+        <p>Storage quotas, retention-based purge, orphan file sweep, and a check command for missing or stale files.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install and run</h2>
+    <p>You need Python 3.10+, a non-root user, and Tor if you want to publish it as an onion service.</p>
+    <ol class="steps">
+      <li><strong>Clone and install</strong>
+<pre><code>git clone https://github.com/Sheikhlipu123/tinydesk.git
+cd tinydesk
+pip install -r requirements.txt</code></pre>
+      </li>
+      <li><strong>Set your directories and admin prefix</strong>
+<pre><code>export ONION_SECRETS=/etc/tinydesk
+export ONION_DATA=/var/lib/tinydesk
+export ADMIN_PREFIX=$(python3 -c "import secrets;print(secrets.token_hex(8))")
+
+python app.py init
+python app.py setpass
+python app.py status</code></pre>
+      </li>
+      <li><strong>Run it</strong>
+<pre><code>gunicorn -w 1 --threads 4 -b 127.0.0.1:8000 --access-logfile /dev/null app:app</code></pre>
+      </li>
+      <li><strong>Publish over Tor</strong> by adding this to <code>torrc</code>, restarting Tor, and reading your address from the <code>hostname</code> file:
+<pre><code>HiddenServiceDir /var/lib/tor/tinydesk/
+HiddenServiceVersion 3
+HiddenServicePort 80 127.0.0.1:8000</code></pre>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section id="config">
+  <div class="wrap">
+    <h2>Configuration</h2>
+    <table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>ONION_SECRETS</code></td><td><code>/etc/onionsite</code></td><td>Keys and admin hash</td></tr>
+        <tr><td><code>ONION_DATA</code></td><td><code>/var/lib/onionsite</code></td><td>Database and uploaded files</td></tr>
+        <tr><td><code>ADMIN_PREFIX</code></td><td><code>admin</code></td><td>URL prefix of the admin area. Set your own.</td></tr>
+        <tr><td><code>MAX_FILE_MB</code></td><td><code>25</code></td><td>Largest upload</td></tr>
+        <tr><td><code>QUOTA_MB</code></td><td><code>500</code></td><td>Total space for files and attachments</td></tr>
+        <tr><td><code>CONV_QUOTA_MB</code></td><td><code>200</code></td><td>Total space for messages</td></tr>
+        <tr><td><code>RETENTION_DAYS</code></td><td><code>30</code></td><td>Delete idle threads on purge. 0 keeps everything.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="security">
+  <div class="wrap">
+    <h2>Security model</h2>
+    <p>Tiny Desk is honest about what it does and does not protect:</p>
+    <ul>
+      <li>Tor protects the transport between visitor and server.</li>
+      <li>Messages are encrypted at rest, but the operator can read them. This is <strong>not</strong> end-to-end encryption.</li>
+      <li>A Ticket and Key cannot be recovered or reset. Anyone holding both can read and write in that thread.</li>
+      <li>Uploaded downloads can be any file type. Never open them on a privileged machine.</li>
+      <li>Back up the secrets directory. Losing <code>msg.key</code> makes stored messages unreadable.</li>
+    </ul>
+    <div class="warn"><strong>Found a vulnerability?</strong> Please do not open a public issue. Use GitHub's private vulnerability reporting on the repository's Security tab.</div>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <h2>Frequently asked questions</h2>
+    <details open>
+      <summary>What is Tiny Desk?</summary>
+      <p>Tiny Desk is a minimal, JavaScript-free notice board and anonymous message desk for Tor onion services, built with Flask and SQLite in a single Python file.</p>
+    </details>
+    <details>
+      <summary>Does Tiny Desk require JavaScript?</summary>
+      <p>No. Pages are server-rendered. Message threads refresh through a meta-refresh iframe.</p>
+    </details>
+    <details>
+      <summary>Is Tiny Desk end-to-end encrypted?</summary>
+      <p>No. Messages are encrypted at rest with AES-256-GCM, but the operator can read them. Tor protects the transport.</p>
+    </details>
+    <details>
+      <summary>Do visitors need an account?</summary>
+      <p>No. Visitors receive a Ticket and Key after sending a message. No account, e-mail or name is required.</p>
+    </details>
+    <details>
+      <summary>Can I run it without Tor?</summary>
+      <p>Yes, for local or internal use. Set <code>COOKIE_SECURE=1</code> only when you serve it behind HTTPS.</p>
+    </details>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Get involved</h2>
+    <p>If Tiny Desk helps you, <a href="https://github.com/Sheikhlipu123/tinydesk">star the repository</a>, open an issue with your use case, or send a pull request. Source code: <a href="https://github.com/Sheikhlipu123/tinydesk">github.com/Sheikhlipu123/tinydesk</a>.</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© Tiny Desk · MIT licensed · Built by <a href="https://github.com/Sheikhlipu123">Sheikhlipu123</a></span>
+    <span><a href="https://github.com/Sheikhlipu123/tinydesk">Repository</a> · <a href="llms.txt">llms.txt</a> · <a href="sitemap.xml">Sitemap</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
