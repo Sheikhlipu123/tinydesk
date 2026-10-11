@@ -1,6 +1,19 @@
-# Tiny Desk
-
-A minimal, JavaScript-free notice board and anonymous message desk for Tor onion services. Flask + SQLite, one file.
+<h1 align="center">◈ Tiny Desk</h1>
+<p align="center">
+  <b>Minimal, JavaScript-free notice board and anonymous message desk for Tor onion services.</b><br>
+  Flask · SQLite · AES-256-GCM · one file
+</p>
+<p align="center">
+  <a href="https://sheikhlipu123.github.io/tinydesk/">Website</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#security-notes">Security</a>
+</p>
+<p align="center">
+  <img src="https://img.shields.io/github/stars/Sheikhlipu123/tinydesk?style=social" alt="GitHub stars">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
+  <img src="https://img.shields.io/badge/no-JavaScript-orange" alt="No JavaScript">
+</p>
 
 ## Features
 
