@@ -1,0 +1,15 @@
+User-agent: *
+Allow: /
+
+# AI crawlers: allowed so the project can appear in AI search answers.
+# Remove these lines if you want to opt out.
+User-agent: GPTBot
+Allow: /
+User-agent: ClaudeBot
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Google-Extended
+Allow: /
+
+Sitemap: https://sheikhlipu123.github.io/tinydesk/sitemap.xml
