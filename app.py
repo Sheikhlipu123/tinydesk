@@ -251,6 +251,23 @@ def scrub_wal(db):
         log.warning('wal_checkpoint_failed')
 
 
+def get_setting(db, key, default=''):
+    row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+    return row['value'] if row else default
+
+
+def set_setting(db, key, value):
+    db.execute(
+        'INSERT INTO settings(key,value) VALUES(?,?) '
+        'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        (key, value),
+    )
+
+
+def contact_paused(db):
+    return get_setting(db, 'contact_paused', '0') == '1'
+
+
 @app.teardown_appcontext
 def close_db(error):
     db = g.pop("db", None)
@@ -326,6 +343,11 @@ CREATE TABLE IF NOT EXISTS sessions(
     created INTEGER NOT NULL,
     last INTEGER NOT NULL,
     pwfp TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -768,7 +790,10 @@ FILE_BODY = (
 TALK_BODY = (
     "<h1>Message the operator</h1>"
     "<p class=mute>Anonymous and simple. No account, e-mail or name.</p>"
-    "<div class=actions><a class='btn pri' href='/contact/start'>Write a new message</a>"
+    "{% if paused %}<div class=card><b>New messages are paused for now.</b> "
+    "The operator is not accepting new threads at the moment. Please check back later. "
+    "If you already have a thread, you can still resume it.</div>{% endif %}"
+    "<div class=actions>{% if not paused %}<a class='btn pri' href='/contact/start'>Write a new message</a>{% endif %}"
     "<a class=btn href='/resume'>Resume a thread</a></div>"
     "<p>Writing a message gives you a Ticket and a Key. Save both. They are the only way back in.</p>"
     "<details class=card><summary>Things to know</summary><ul>"
@@ -790,6 +815,15 @@ NEW_BODY = (
     "<label>Your message<textarea name=m maxlength=4000 rows=8 required></textarea></label>"
     "<button class='btn pri'>Send message</button></form>"
     "<p class=mute>Already have a thread? <a href='/resume'>Resume it</a>.</p>"
+)
+
+PAUSED_BODY = (
+    "<h1>New messages are paused</h1>"
+    "<div class=card><p>The operator has temporarily stopped accepting new threads. "
+    "Nothing is wrong on your side, and no message was sent.</p>"
+    "<p class=mute>Please try again later. If you already have a thread, "
+    "you can still <a href='/resume'>resume it</a>.</p></div>"
+    "<p><a class='btn pri' href='/contact'>Back to contact</a></p>"
 )
 
 CREATED_BODY = (
@@ -851,6 +885,14 @@ ADMIN_LOGIN_BODY = (
 
 DASHBOARD_BODY = (
     "<h1>Overview</h1>"
+    "<div class=card><p>New threads: "
+    "{% if paused %}<span class='pill bad'>Paused</span>{% else %}<span class='pill ok'>Open</span>{% endif %}</p>"
+    "<p class=mute>While paused, visitors cannot start new threads and see a friendly notice. "
+    "Existing threads keep working.</p>"
+    "<form method=post action='{{a}}/pause'>" + CS +
+    "<input type=hidden name=state value='{% if paused %}open{% else %}paused{% endif %}'>"
+    "<button class='btn{% if not paused %} pri{% endif %}'>"
+    "{% if paused %}Resume new threads{% else %}Pause new threads{% endif %}</button></form></div>"
     "<div class=card><p><b>{{n[0]}}</b> files · <b>{{n[1]}}</b> threads · "
     "<b>{{n[2]}}</b> awaiting reply</p>"
     "<progress value='{{used}}' max='{{qraw}}'></progress>"
@@ -1213,11 +1255,15 @@ def attachment(aid):
 
 @app.get('/contact')
 def talk():
-    return page(talk_nav('how') + TALK_BODY, days=C.retention // 86400)
+    return page(talk_nav('how') + TALK_BODY, days=C.retention // 86400, paused=contact_paused(database()))
 
 
 @app.route('/contact/start', methods=['GET', 'POST'])
 def talk_new():
+    db = database()
+    if contact_paused(db):
+        return page(talk_nav('new') + PAUSED_BODY), (503 if request.method == 'POST' else 200)
+
     if request.method == 'GET':
         return page(talk_nav('new') + NEW_BODY)
 
@@ -1236,7 +1282,6 @@ def talk_new():
     limited('new', *GLOBAL_NEW)
     limited_weight('inbound', weight, *GLOBAL_INBOUND)
 
-    db = database()
     begin_conv_write(db, m)
 
     cid, sec = secrets.token_urlsafe(16), secrets.token_urlsafe(32)
@@ -1507,8 +1552,20 @@ def dashboard():
         DASHBOARD_BODY,
         n=n, used=used_bytes(db), qraw=C.quota,
         cused=conv_bytes(db), cqraw=C.conv_quota, cquota=fmt_size(C.conv_quota),
-        sz=fmt_size, quota=fmt_size(C.quota), a=C.admin,
+        sz=fmt_size, quota=fmt_size(C.quota), a=C.admin, paused=contact_paused(db),
     )
+
+
+@app.post(C.admin + '/pause')
+def admin_pause():
+    state = request.form.get('state', '')
+    if state not in ('paused', 'open'):
+        abort(400)
+    db = database()
+    set_setting(db, 'contact_paused', '1' if state == 'paused' else '0')
+    db.commit()
+    log.info('contact_paused' if state == 'paused' else 'contact_resumed')
+    return redirect(C.admin, 303)
 
 
 def safe_name(name):
