@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="google-site-verification" content="HurBP98GflOEa0XVzt5VmurFWJRN1a0U0_7DIHo_P7E" />
+<title>Tiny Desk – Anonymous notice board and message desk for Tor onion services (Flask + SQLite)</title>
+<meta name="description" content="Tiny Desk is a minimal, JavaScript-free, open-source notice board and anonymous message desk for Tor onion services. One Python file, Flask, SQLite, AES-256-GCM encryption.">
+<meta name="keywords" content="tor onion service, anonymous messaging, flask, sqlite, notice board, self-hosted, privacy, javascript-free, python, hidden service">
+<meta name="author" content="{{OWNER}}">
+<meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1">
+<link rel="canonical" href="{{SITE}}">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Tiny Desk">
+<meta property="og:title" content="Tiny Desk – Anonymous notice board for Tor onion services">
+<meta property="og:description" content="Minimal, JavaScript-free notice board and anonymous message desk for Tor onion services. Flask + SQLite, one file.">
+<meta property="og:url" content="{{SITE}}">
+<meta property="og:image" content="{{SITE}}og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+
+<!-- Twitter / X -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Tiny Desk – Anonymous notice board for Tor onion services">
+<meta name="twitter:description" content="JavaScript-free notice board and anonymous message desk for Tor. Flask + SQLite, one file.">
+<meta name="twitter:image" content="{{SITE}}og-image.png">
+
+<!-- Structured data (generated at build time: version, dates, FAQ) -->
+<script type="application/ld+json">
+{{JSONLD}}
+</script>
+
+<style>
+:root{--bg:#0f0e1f;--card:#18163a;--ink:#ece9ff;--mute:#a5a2d6;--pri:#8b7bff;--pri2:#6d5dfc;--line:#2c2862;--code:#0b0a1c;--r:14px}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:#b8adff}
+a:hover{color:#fff}
+.wrap{max-width:60rem;margin:0 auto;padding:0 1.25rem}
+header.top{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(15,14,31,.92);backdrop-filter:blur(6px);z-index:10}
+header.top .wrap{display:flex;justify-content:space-between;align-items:center;padding:.9rem 1.25rem;flex-wrap:wrap;gap:.6rem}
+.logo{font-weight:800;color:#fff;text-decoration:none;font-size:1.1rem}
+nav a{margin-left:1.1rem;text-decoration:none;color:var(--mute);font-size:.95rem}
+nav a:hover{color:#fff}
+.btn{display:inline-block;padding:.6rem 1.3rem;border-radius:999px;text-decoration:none;font-weight:600;border:1px solid var(--pri2);background:var(--pri2);color:#fff}
+.btn:hover{background:var(--pri);color:#fff}
+.btn.line{background:transparent;color:#d9d4ff;border-color:var(--line)}
+.btn.line:hover{border-color:var(--pri);color:#fff}
+.hero{padding:4.5rem 0 3rem;text-align:left}
+.eyebrow{display:inline-block;color:var(--pri);font-size:.85rem;letter-spacing:.12em;text-transform:uppercase;font-weight:700;margin-bottom:.8rem}
+h1{font-size:clamp(2.2rem,5vw,3.4rem);line-height:1.1;margin:0 0 1rem;color:#fff}
+.lead{font-size:1.2rem;color:var(--mute);max-width:44rem;margin:0 0 1.8rem}
+.cta{display:flex;gap:.7rem;flex-wrap:wrap}
+.badges{margin-top:1.4rem;display:flex;gap:.5rem;flex-wrap:wrap;font-size:.85rem;color:var(--mute)}
+.badges span,.badges .stat{border:1px solid var(--line);border-radius:999px;padding:.2rem .75rem}
+.badges a.stat{text-decoration:none;color:var(--mute)}
+.badges a.stat:hover{color:#fff;border-color:var(--pri)}
+.badges .live{border-color:var(--pri2);color:#d9d4ff}
+section{padding:2.5rem 0;border-top:1px solid var(--line)}
+h2{font-size:1.6rem;color:#fff;margin:0 0 1rem}
+h3{font-size:1.1rem;color:#fff;margin:1.4rem 0 .4rem}
+p{margin:.6rem 0}
+.muted{color:var(--mute);font-size:.9rem}
+.grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:1.2rem}
+.card h3{margin-top:0}
+.card p{color:var(--mute);font-size:.95rem;margin:0}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:1rem;overflow-x:auto;font-size:.9rem}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;color:#d6d0ff}
+p code,li code,td code{background:var(--code);padding:.1rem .35rem;border-radius:6px;font-size:.88em}
+table{width:100%;border-collapse:collapse;font-size:.92rem;margin:1rem 0;display:block;overflow-x:auto}
+th,td{text-align:left;padding:.55rem .6rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:#fff}
+td{color:var(--mute)}
+details{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:.8rem 1.1rem;margin:.6rem 0}
+summary{cursor:pointer;font-weight:600;color:#fff}
+details p{color:var(--mute)}
+
+/* Release block */
+.release .rel-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:.5rem}
+.pill{display:inline-block;font-size:.7rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:var(--pri2);color:#fff;border-radius:999px;padding:.1rem .6rem;vertical-align:middle}
+.warn-pill{background:#fb7185}
+ul.plain{list-style:none;padding:0;margin:.4rem 0}
+ul.plain li{padding:.35rem 0;border-bottom:1px solid var(--line)}
+ul.plain li span{color:var(--mute);font-size:.85rem;margin-left:.5rem}
+
+/* Rendered README / release notes */
+.md{overflow-wrap:anywhere}
+.md h3{font-size:1.35rem;margin-top:2rem;padding-top:1rem;border-top:1px solid var(--line)}
+.md h4{font-size:1.1rem}
+.md img{max-width:100%;height:auto}
+.md blockquote{margin:1rem 0;padding:.2rem 1rem;border-left:4px solid var(--pri2);background:var(--card);border-radius:8px;color:var(--mute)}
+.md hr{border:0;border-top:1px solid var(--line)}
+.md ul,.md ol{padding-left:1.4rem}
+.md li{margin:.25rem 0}
+.release .md h3{font-size:1rem;border:0;padding:0;margin-top:1rem}
+.toc ul{margin:.6rem 0 0;padding-left:1.2rem;columns:2 14rem}
+.toc a{text-decoration:none}
+
+footer{border-top:1px solid var(--line);padding:2rem 0;color:var(--mute);font-size:.9rem}
+footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem}
+@media (max-width:40rem){nav a{margin-left:.7rem}.hero{padding-top:2.5rem}}
+</style>
+</head>
+
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="{{BASE}}">◈ Tiny Desk</a>
+    <nav aria-label="Primary">
+      <a href="#features">Features</a>
+      {{NAV_RELEASE}}
+      <a href="#docs">Docs</a>
+      <a href="#faq">FAQ</a>
+      <a href="{{REPO_URL}}">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero" style="border:0">
+  <div class="wrap">
+    <span class="eyebrow">Open source · Python · Tor</span>
+    <h1>Tiny Desk: an anonymous notice board and message desk for Tor onion services</h1>
+    <p class="lead">A minimal, JavaScript-free self-hosted app. Post notices and files, and let visitors send anonymous messages with no account, e-mail or name. One Python file, built on Flask and SQLite.</p>
+    <div class="cta">
+      <a class="btn" href="{{REPO_URL}}">Star on GitHub</a>
+      <a class="btn line" href="#docs">Read the docs</a>
+    </div>
+    <div class="badges" aria-label="Project highlights">
+      {{STATS}}
+    </div>
+    <div class="badges" aria-label="Technology">
+      <span>Python 3.10+</span><span>Flask</span><span>SQLite</span><span>Tor onion service</span><span>No JavaScript</span><span>AES-256-GCM</span>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Features</h2>
+    <div class="grid">
+      <article class="card">
+        <h3>Notices</h3>
+        <p>Public posts with image or .txt attachments, optional countdown timers, draft and hide controls.</p>
+      </article>
+      <article class="card">
+        <h3>Anonymous messaging</h3>
+        <p>Visitors get a Ticket and Key. No account, e-mail or name. Messages are stored AES-256-GCM encrypted.</p>
+      </article>
+      <article class="card">
+        <h3>No JavaScript</h3>
+        <p>Server-rendered pages with a strict Content-Security-Policy. Threads refresh through a meta-refresh iframe.</p>
+      </article>
+      <article class="card">
+        <h3>Downloads</h3>
+        <p>Operator-uploaded files of any type, served as attachments.</p>
+      </article>
+      <article class="card">
+        <h3>Hardening</h3>
+        <p>CSRF tokens on every POST, Argon2 admin password, short-lived admin sessions, request size limits, rate limits, magic-byte checks on attachments.</p>
+      </article>
+      <article class="card">
+        <h3>Housekeeping</h3>
+        <p>Storage quotas, retention-based purge, orphan file sweep, and a check command for missing or stale files.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+{{RELEASE_SECTION}}
+
+<section id="docs">
+  <div class="wrap">
+    <h2>Documentation</h2>
+    <p class="muted">This section is generated automatically from the project's <a href="{{REPO_URL}}#readme">README</a>.</p>
+    {{TOC}}
+    <div class="md">
+{{README}}
+    </div>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <h2>Frequently asked questions</h2>
+    {{FAQ}}
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Get involved</h2>
+    <p>If Tiny Desk helps you, <a href="{{REPO_URL}}">star the repository</a>, open an issue with your use case, or send a pull request. Source code: <a href="{{REPO_URL}}">{{REPO_URL}}</a>.</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© {{YEAR}} Tiny Desk · Built by <a href="https://github.com/{{OWNER}}">{{OWNER}}</a> · Site built {{BUILT}}</span>
+    <span><a href="{{REPO_URL}}">Repository</a> · <a href="llms.txt">llms.txt</a> · <a href="sitemap.xml">Sitemap</a></span>
+  </div>
+</footer>
+
+</body>
+  </html>
