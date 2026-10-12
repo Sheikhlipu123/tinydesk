@@ -21,7 +21,7 @@
 - **Downloads:** operator-uploaded files of any type, served as attachments
 - **Anonymous messaging:** visitors write a message and get a Ticket and Key. No account, e-mail or name. Messages are stored AES-256-GCM encrypted
 - **No JavaScript:** server-rendered pages. Message threads refresh through a meta-refresh iframe
-- **Hardening:** strict CSP, CSRF tokens on every POST, Argon2 admin password, short-lived admin sessions, request size limits, rate limits, strict permission checks on secrets and data directories, magic-byte checks on attachments
+- **Hardening:** strict CSP, CSRF tokens on every POST, Argon2 admin password, short-lived admin sessions, request size limits, rate limits, strict permission checks on secrets and data directories, admin prefix requirement
 - **Housekeeping:** storage quotas, retention-based purge, orphan file sweep
 
 ## Requirements
@@ -48,9 +48,48 @@ python app.py setpass
 python app.py status
 ```
 
-`init` creates the private directories, the session and message keys, and the database. `setpass` asks for the admin password (14+ characters with upper case, lower case and a digit) and revokes existing admin sessions. Both `ONION_SECRETS` and `ONION_DATA` must be owned by the running user with no group or other access, and the app refuses to start as root.
+`init` creates the private directories, the session and message keys, and the database. `setpass` asks for the admin password (14+ characters with upper case, lower case and a digit) and revokes all admin sessions.
 
 The admin login is at `/<ADMIN_PREFIX>/signin`. The prefix must be at least 9 characters, using only letters, digits, `_` and `-`.
+
+## Deployment notes
+
+Run exactly one Gunicorn process with threads so that one slow or stalled client cannot block everyone else, while the in-memory limits stay in one place:
+
+```
+export ONION_WORKERS=1
+
+gunicorn -w 1 --worker-class gthread --threads 16 --timeout 60 \
+         --graceful-timeout 15 --keep-alive 5 --limit-request-line 2048 \
+         --limit-request-fields 50 -b 127.0.0.1:8000 app:app
+```
+
+Do not add `--access-logfile`. Set `ONION_WORKERS` to the process count so the app can warn you if it is wrong.
+
+Tor-side DoS defenses, in the `HiddenServiceDir` block of `torrc`:
+
+```
+HiddenServicePoWDefensesEnabled 1
+HiddenServiceEnableIntroDoSDefense 1
+HiddenServiceEnableIntroDoSRatePerSec 25
+HiddenServiceEnableIntroDoSBurstPerSec 200
+```
+
+First boot:
+
+```
+python app.py init
+python app.py setpass
+```
+
+Then start the service, and schedule these maintenance commands:
+
+```
+python app.py purge
+python app.py check
+```
+
+Use a systemd timer or cron to run `purge` daily and `check` regularly.
 
 ## Run
 
@@ -65,6 +104,7 @@ This listens on `127.0.0.1:8000`.
 Production, with a single worker because the rate limiter lives in memory:
 
 ```
+export ONION_WORKERS=1
 gunicorn -w 1 --threads 4 -b 127.0.0.1:8000 --access-logfile /dev/null app:app
 ```
 
