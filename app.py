@@ -55,6 +55,7 @@ STALE_SECONDS = 3600
 SQLITE_MAX_INT = 2 ** 63 - 1
 PART_RE = re.compile(r'\.[0-9a-f]{32}\.part')
 LOGIN_CONCURRENCY = 2            # simultaneous Argon2 verifications allowed
+LOGIN_FAIL = (50, 300)           # failed admin sign-ins per window; global, since there is no client IP
 
 # Global ceilings (count, window in seconds). Per-visitor limits are session-based,
 # because an onion site has no client IP, but a session lives in a cookie and can be
@@ -200,6 +201,12 @@ def limited(name, count, window, hit=True):
         if hit:
             q.append(now)
         return False
+
+
+def clear_limit(name):
+    """Forget every hit recorded under this limiter name."""
+    with RL_LOCK:
+        RL.pop(name, None)
 
 
 def limited_weight(name, weight, budget, window):
@@ -1374,9 +1381,14 @@ def login():
     pw = request.form.get('pw', '')
     ok = False
 
+    # Failed-attempt throttle. Checked before any Argon2 work and without recording a hit,
+    # so refused requests cost no CPU and do not extend the window: it simply ages out.
+    if limited('login_fail', *LOGIN_FAIL, hit=False):
+        abort(429)
+
     if 0 < len(pw) <= MAX_PASSWORD_LEN:
-        # Bound concurrent Argon2 work. This refuses excess attempts without locking
-        # the operator out for minutes the way a time-window lockout would.
+        # Bound concurrent Argon2 work. A request refused here is not a failed login
+        # and is not counted against LOGIN_FAIL.
         if not LOGIN_SLOTS.acquire(blocking=False):
             abort(429)
         try:
@@ -1388,12 +1400,14 @@ def login():
             LOGIN_SLOTS.release()
 
     if not ok:
+        limited('login_fail', *LOGIN_FAIL)
         log.warning('admin_login_failed')
         return page(
             "<div class=narrow><div class=alert>Invalid credentials.</div>"
             "<p><a class='btn' href='" + C.admin + "/signin'>Try again</a></p></div>"
         ), 401
 
+    clear_limit('login_fail')
     db = database()
     t = NOW()
     db.execute('DELETE FROM sessions WHERE created<? OR last<?', (t - 28800, t - 900))
