@@ -1,22 +1,23 @@
 """Tiny Desk: notices, downloads and anonymous message threads.
 
 Deployment notes
+
 - Run exactly ONE gunicorn process (-w 1) with THREADS, so one slow or stalled
   client cannot block everyone, while the in-memory limits stay in one place:
-      gunicorn -w 1 --worker-class gthread --threads 16 --timeout 60
-               --graceful-timeout 15 --keep-alive 5 --limit-request-line 2048
-               --limit-request-fields 50 -b 127.0.0.1:8000 app:app
+  gunicorn -w 1 --worker-class gthread --threads 16 --timeout 60
+  --graceful-timeout 15 --keep-alive 5 --limit-request-line 2048
+  --limit-request-fields 50 -b 127.0.0.1:8000 app:app
   (one command line; do not add --access-logfile). Set ONION_WORKERS to the
   process count so the app can warn you if it is wrong.
 - Tor-side DoS defenses, in the HiddenServiceDir block of torrc
   (PoW needs Tor 0.4.8+ built with it; tune the numbers):
-      HiddenServicePoWDefensesEnabled 1
-      HiddenServiceEnableIntroDoSDefense 1
-      HiddenServiceEnableIntroDoSRatePerSec 25
-      HiddenServiceEnableIntroDoSBurstPerSec 200
-- First boot: `python app.py init`, then `python app.py setpass`, then start the service.
-- Schedule `python app.py purge` daily (see deploy/onionsite-purge.timer).
-- Schedule `python app.py check` to verify stored file hashes.
+  HiddenServicePoWDefensesEnabled 1
+  HiddenServiceEnableIntroDoSDefense 1
+  HiddenServiceEnableIntroDoSRatePerSec 25
+  HiddenServiceEnableIntroDoSBurstPerSec 200
+- First boot: python app.py init, then python app.py setpass, then start the service.
+- Schedule python app.py purge daily (see deploy/onionsite-purge.timer).
+- Schedule python app.py check to verify stored file hashes.
 """
 from __future__ import annotations
 import argparse, calendar, getpass, hashlib, hmac, logging, os, re, secrets, sqlite3, stat, sys, threading, time
@@ -64,6 +65,7 @@ LOGIN_FAIL = (50, 300)           # failed admin sign-ins per window; global, sin
 GLOBAL_NEW = (600, 3600)
 GLOBAL_READ_FAIL = (5000, 3600)
 GLOBAL_SEND = (300, 60)
+
 # Total visitor message bytes accepted per window, across all visitors. Ordinary use
 # is a tiny fraction of this. It bounds how fast anyone can fill CONV_QUOTA_MB.
 GLOBAL_INBOUND = (8 * MB, 3600)
@@ -209,10 +211,11 @@ def clear_limit(name):
         RL.pop(name, None)
 
 
-def limited_weight(name, weight, budget, window):
+def limited_weight(name, weight, budget, window, hit=True):
     """Sliding-window byte budget shared by every visitor. True means over budget.
 
     Entries are bounded because callers also pass the count-based `limited` check first.
+    With hit=False the budget is only checked, not charged.
     """
     now = time.monotonic()
     with RL_LOCK:
@@ -220,17 +223,19 @@ def limited_weight(name, weight, budget, window):
         q[:] = [(t, w) for t, w in q if t > now - window]
         if sum(w for _, w in q) + weight > budget:
             return True
-        q.append((now, weight))
+        if hit:
+            q.append((now, weight))
         return False
 
 
-def session_limited(name, count, window):
+def session_limited(name, count, window, hit=True):
     t = NOW()
     hits = [x for x in session.get(name, []) if x > t - window]
     if len(hits) >= count:
         return True
-    hits.append(t)
-    session[name] = hits
+    if hit:
+        hits.append(t)
+        session[name] = hits
     return False
 
 
@@ -959,6 +964,17 @@ ADMIN_CONV_BODY = (
     "<input type=hidden name=del value=1><button class=btn>Delete thread</button></form>"
 )
 
+# Shown before any admin delete. The second POST carries confirm=1 plus the original fields.
+CONFIRM_BODY = (
+    "<div class=narrow><h1>{{title}}</h1>"
+    "<p class=mute>This cannot be undone.</p>"
+    "<form method=post class=card>" + CS +
+    "{% for k, v in fields %}<input type=hidden name='{{k}}' value='{{v}}'>{% endfor %}"
+    "<input type=hidden name=confirm value=1>"
+    "<div class=actions><a class=btn href='{{back}}'>Cancel</a>"
+    "<button class='btn pri'>Yes, delete</button></div></form></div>"
+)
+
 
 def page(body, **ctx):
     return render_template_string(BASE + body + FOOT, adm_root=C.admin, is_admin=in_admin_area(), **ctx)
@@ -1219,17 +1235,23 @@ def talk_new():
     if request.method == 'GET':
         return page(talk_nav('new') + NEW_BODY)
 
-    if session_limited('new', 3, 3600) or limited('new', *GLOBAL_NEW):
-        abort(429)
-
     m = request.form.get('m', '').strip()
     if not m or len(m) > 4000:
         abort(400)
 
     # Shared byte budget across all visitors: bounds how fast the message store can fill,
-    # even when each request arrives with a fresh cookie.
-    if limited_weight('inbound', len(m.encode()) + BLOB_OVERHEAD + THREAD_OVERHEAD, *GLOBAL_INBOUND):
+    # even when each request arrives with a fresh cookie. Check first without recording,
+    # then record, so a request that is refused does not burn quota for anyone.
+    weight = len(m.encode()) + BLOB_OVERHEAD + THREAD_OVERHEAD
+    if (
+        session_limited('new', 3, 3600, hit=False)
+        or limited('new', *GLOBAL_NEW, hit=False)
+        or limited_weight('inbound', weight, *GLOBAL_INBOUND, hit=False)
+    ):
         abort(429)
+    session_limited('new', 3, 3600)
+    limited('new', *GLOBAL_NEW)
+    limited_weight('inbound', weight, *GLOBAL_INBOUND)
 
     db = database()
     begin_conv_write(db, m)
@@ -1320,12 +1342,17 @@ def chat():
             if len(m) > 4000:
                 abort(400)
             size = len(m.encode())
+            weight = size + BLOB_OVERHEAD
+            # Check without recording, then record, so refused requests do not burn quota.
             if (
-                session_limited('send', 10, 60)
-                or limited('send', *GLOBAL_SEND)
-                or limited_weight('inbound', size + BLOB_OVERHEAD, *GLOBAL_INBOUND)
+                session_limited('send', 10, 60, hit=False)
+                or limited('send', *GLOBAL_SEND, hit=False)
+                or limited_weight('inbound', weight, *GLOBAL_INBOUND, hit=False)
             ):
                 abort(429)
+            session_limited('send', 10, 60)
+            limited('send', *GLOBAL_SEND)
+            limited_weight('inbound', weight, *GLOBAL_INBOUND)
 
             begin_conv_write(db, m)
             if not db.execute('SELECT 1 FROM convs WHERE id=?', (row['id'],)).fetchone():
@@ -1437,8 +1464,8 @@ def logout():
 def dashboard():
     db = database()
     n = db.execute(
-        'SELECT (SELECT count(*) FROM files),'
-        '(SELECT count(*) FROM convs),'
+        'SELECT (SELECT count() FROM files),'
+        '(SELECT count() FROM convs),'
         "(SELECT count(*) FROM convs WHERE status='open')"
     ).fetchone()
     return page(
@@ -1728,6 +1755,13 @@ def admin_notices():
 
         elif action == 'delete':
             nid = parse_id(request.form.get('id', ''))
+            if not request.form.get('confirm'):
+                return page(
+                    CONFIRM_BODY,
+                    title='Delete this notice and its attachments?',
+                    fields=[('action', 'delete'), ('id', str(nid))],
+                    back=C.admin + '/posts',
+                )
             ids = [r['id'] for r in db.execute('SELECT id FROM attachments WHERE notice=?', (nid,))]
             cur = db.execute('DELETE FROM notices WHERE id=?', (nid,))
             if cur.rowcount == 0:
@@ -1777,6 +1811,13 @@ def admin_files():
     if request.method == 'POST':
         if request.form.get('del'):
             f = getfile(request.form.get('del', ''))
+            if not request.form.get('confirm'):
+                return page(
+                    CONFIRM_BODY,
+                    title=f"Delete file \u201c{f['name']}\u201d?",
+                    fields=[('del', f['id'])],
+                    back=C.admin + '/downloads',
+                )
             cur = db.execute('DELETE FROM files WHERE id=?', (f['id'],))
             if cur.rowcount == 0:
                 abort(404)
@@ -1840,6 +1881,13 @@ def admin_conv(cid):
 
     if request.method == 'POST':
         if request.form.get('del'):
+            if not request.form.get('confirm'):
+                return page(
+                    CONFIRM_BODY,
+                    title=f'Delete thread #{cid}?',
+                    fields=[('del', '1')],
+                    back=C.admin + f'/threads/{cid}',
+                )
             db.execute('DELETE FROM convs WHERE id=?', (cid,))
             log.info('conversation_deleted')
             return redirect(C.admin + '/threads', 303)
