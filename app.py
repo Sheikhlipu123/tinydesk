@@ -1,22 +1,23 @@
 """Tiny Desk: notices, downloads and anonymous message threads.
 
 Deployment notes
+
 - Run exactly ONE gunicorn process (-w 1) with THREADS, so one slow or stalled
   client cannot block everyone, while the in-memory limits stay in one place:
-      gunicorn -w 1 --worker-class gthread --threads 16 --timeout 60
-               --graceful-timeout 15 --keep-alive 5 --limit-request-line 2048
-               --limit-request-fields 50 -b 127.0.0.1:8000 app:app
+  gunicorn -w 1 --worker-class gthread --threads 16 --timeout 60
+  --graceful-timeout 15 --keep-alive 5 --limit-request-line 2048
+  --limit-request-fields 50 -b 127.0.0.1:8000 app:app
   (one command line; do not add --access-logfile). Set ONION_WORKERS to the
   process count so the app can warn you if it is wrong.
 - Tor-side DoS defenses, in the HiddenServiceDir block of torrc
   (PoW needs Tor 0.4.8+ built with it; tune the numbers):
-      HiddenServicePoWDefensesEnabled 1
-      HiddenServiceEnableIntroDoSDefense 1
-      HiddenServiceEnableIntroDoSRatePerSec 25
-      HiddenServiceEnableIntroDoSBurstPerSec 200
-- First boot: `python app.py init`, then `python app.py setpass`, then start the service.
-- Schedule `python app.py purge` daily (see deploy/onionsite-purge.timer).
-- Schedule `python app.py check` to verify stored file hashes.
+  HiddenServicePoWDefensesEnabled 1
+  HiddenServiceEnableIntroDoSDefense 1
+  HiddenServiceEnableIntroDoSRatePerSec 25
+  HiddenServiceEnableIntroDoSBurstPerSec 200
+- First boot: python app.py init, then python app.py setpass, then start the service.
+- Schedule python app.py purge daily (see deploy/onionsite-purge.timer).
+- Schedule python app.py check to verify stored file hashes.
 """
 from __future__ import annotations
 import argparse, calendar, getpass, hashlib, hmac, logging, os, re, secrets, sqlite3, stat, sys, threading, time
@@ -32,48 +33,41 @@ os.umask(0o077)
 NOW = lambda: int(time.time())
 log = logging.getLogger("onionsite")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(message)s")
-logging.getLogger("werkzeug").setLevel(logging.WARNING)  # request URLs are not logged
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 PH = PasswordHasher()
 
 MB = 1024 * 1024
 PUBLIC_BODY_LIMIT = 32 * 1024
 ADMIN_BODY_LIMIT = 128 * 1024
 MAX_PASSWORD_LEN = 256
-CONV_TTL = 4 * 3600              # idle timeout for visitor threads
-REVEAL_TTL = 600                 # seconds a freshly created Ticket and Key can be shown
+CONV_TTL = 4 * 3600
+REVEAL_TTL = 600
 FEED_SECONDS = 5
-MAX_ATTACHMENTS = 10             # per upload request
+MAX_ATTACHMENTS = 10
 MAX_ATTACHMENTS_PER_NOTICE = 50
 THREAD_LIMIT = 500
 MAX_PUBLIC_NOTICES = 100
 PAGE_SIZE = 50
 BLOB_OVERHEAD = 28
-THREAD_OVERHEAD = 1024           # rough storage cost of a new thread beyond its first message
+THREAD_OVERHEAD = 1024
 MAX_TIMER = 253402300799
 TIMER_RE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}')
 STALE_SECONDS = 3600
 SQLITE_MAX_INT = 2 ** 63 - 1
 PART_RE = re.compile(r'\.[0-9a-f]{32}\.part')
-LOGIN_CONCURRENCY = 2            # simultaneous Argon2 verifications allowed
-LOGIN_FAIL = (50, 300)           # failed admin sign-ins per window; global, since there is no client IP
+LOGIN_CONCURRENCY = 2
+LOGIN_FAIL = (50, 300)
+RESERVED_PATHS = ('assets', 'downloads', 'att', 'contact', 'resume', 'thread', 'burn', 'burned')
 
-# Global ceilings (count, window in seconds). Per-visitor limits are session-based,
-# because an onion site has no client IP, but a session lives in a cookie and can be
-# discarded. The real protection against flooding is therefore (a) the weighted
-# inbound byte budget below and (b) the per-thread limits stored in the database.
 GLOBAL_NEW = (600, 3600)
 GLOBAL_READ_FAIL = (5000, 3600)
 GLOBAL_SEND = (300, 60)
-# Total visitor message bytes accepted per window, across all visitors. Ordinary use
-# is a tiny fraction of this. It bounds how fast anyone can fill CONV_QUOTA_MB.
 GLOBAL_INBOUND = (8 * MB, 3600)
 
-# Per-thread limits, enforced from the database so clearing cookies or resuming the
-# thread in a new browser does not reset them. They apply to visitor messages only.
-THREAD_RATE = (10, 60)           # messages per window
+THREAD_RATE = (10, 60)
 THREAD_HOURLY = 100
-THREAD_MAX_MSGS = 300            # visitor messages per thread, in total
-THREAD_MAX_BYTES = 512 * 1024    # stored (encrypted) visitor bytes per thread
+THREAD_MAX_MSGS = 300
+THREAD_MAX_BYTES = 512 * 1024
 
 ATT_TYPES = {
     'png': 'image/png',
@@ -115,15 +109,13 @@ class Config:
     def __init__(self):
         self.secret_dir = Path(os.getenv("ONION_SECRETS", "/etc/onionsite"))
         self.data_dir = Path(os.getenv("ONION_DATA", "/var/lib/onionsite"))
-        # No default: a guessable admin path defeats the point of hiding it.
         self.admin_raw = os.getenv("ADMIN_PREFIX", "").strip("/")
-        self.admin = "/" + self.admin_raw if self.admin_raw else ""
+        self.admin = "/" + self.admin_raw if self.admin_raw else "/admin-prefix-not-set"
         self.max_file = self.mb("MAX_FILE_MB", 25)
         self.attach_max = min(self.max_file, self.mb("ATTACH_MB", 8))
         self.quota = self.mb("QUOTA_MB", 500)
         self.conv_quota = self.mb("CONV_QUOTA_MB", 200)
         self.retention = int(os.getenv("RETENTION_DAYS", "30")) * 86400
-        # Secure by default. Set COOKIE_SECURE=0 only for local plain-HTTP development.
         self.cookie_secure = os.getenv("COOKIE_SECURE", "1") == "1"
         self.db = self.data_dir / "site.db"
         self.files = self.data_dir / "files"
@@ -143,10 +135,14 @@ class Config:
         if (
             len(self.admin_raw) < 10
             or not re.fullmatch(r'[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*', self.admin_raw)
+            or self.admin_raw.split('/')[0] in RESERVED_PATHS
             or self.max_file > self.quota
             or self.retention < 0
         ):
-            raise RuntimeError("invalid configuration: ADMIN_PREFIX must be 10+ URL-safe characters")
+            raise RuntimeError(
+                "invalid configuration: ADMIN_PREFIX must be 10+ URL-safe characters "
+                "and must not start with a public path name"
+            )
 
         check_path(self.secret_dir, True, True)
 
@@ -178,7 +174,6 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Strict",
     SESSION_COOKIE_SECURE=C.cookie_secure,
-    # __Host- requires Secure, Path=/ and no Domain. Flask sets the last two.
     SESSION_COOKIE_NAME="__Host-onionsite" if C.cookie_secure else "onionsite",
     MAX_CONTENT_LENGTH=UPLOAD_LIMIT,
     MAX_FORM_MEMORY_SIZE=ADMIN_BODY_LIMIT,
@@ -204,33 +199,30 @@ def limited(name, count, window, hit=True):
 
 
 def clear_limit(name):
-    """Forget every hit recorded under this limiter name."""
     with RL_LOCK:
         RL.pop(name, None)
 
 
-def limited_weight(name, weight, budget, window):
-    """Sliding-window byte budget shared by every visitor. True means over budget.
-
-    Entries are bounded because callers also pass the count-based `limited` check first.
-    """
+def limited_weight(name, weight, budget, window, hit=True):
     now = time.monotonic()
     with RL_LOCK:
         q = RL.setdefault(name, [])
         q[:] = [(t, w) for t, w in q if t > now - window]
         if sum(w for _, w in q) + weight > budget:
             return True
-        q.append((now, weight))
+        if hit:
+            q.append((now, weight))
         return False
 
 
-def session_limited(name, count, window):
+def session_limited(name, count, window, hit=True):
     t = NOW()
     hits = [x for x in session.get(name, []) if x > t - window]
     if len(hits) >= count:
         return True
-    hits.append(t)
-    session[name] = hits
+    if hit:
+        hits.append(t)
+        session[name] = hits
     return False
 
 
@@ -249,6 +241,31 @@ def discard_db_changes():
     db = g.get("db")
     if db is not None:
         db.rollback()
+
+
+def scrub_wal(db):
+    try:
+        db.commit()
+        db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    except sqlite3.Error:
+        log.warning('wal_checkpoint_failed')
+
+
+def get_setting(db, key, default=''):
+    row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+    return row['value'] if row else default
+
+
+def set_setting(db, key, value):
+    db.execute(
+        'INSERT INTO settings(key,value) VALUES(?,?) '
+        'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        (key, value),
+    )
+
+
+def contact_paused(db):
+    return get_setting(db, 'contact_paused', '0') == '1'
 
 
 @app.teardown_appcontext
@@ -327,9 +344,13 @@ CREATE TABLE IF NOT EXISTS sessions(
     last INTEGER NOT NULL,
     pwfp TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS settings(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
-# (table, column, declaration). Columns added after the first release.
 MIGRATIONS = (
     ("notices", "timer_until", "INTEGER"),
     ("notices", "censored", "INTEGER NOT NULL DEFAULT 0"),
@@ -359,7 +380,6 @@ def secret(name):
 
 
 def load_keys():
-    """Read the message key once at startup instead of once per message."""
     global AEAD
     AEAD = AESGCM(secret("msg.key"))
 
@@ -434,13 +454,6 @@ def admin_session_valid(touch=True):
 
 
 def open_conv(conv_id, idhash):
-    """Sign this browser in to a thread.
-
-    SQLite reuses the id of the newest row after it is deleted, so the numeric id
-    alone is not a safe handle: a stale cookie could land on a different visitor's
-    new thread. The session also carries part of the thread's secret hash, which
-    is checked on every request in current_conv().
-    """
     session['conv'] = conv_id
     session['conv_h'] = idhash[:16]
     session['conv_t'] = NOW()
@@ -453,12 +466,6 @@ def close_conv():
 
 
 def current_conv(touch=True):
-    """Return the visitor's open thread, or None.
-
-    The idle timer restarts only when touch=True (page loads and sends), so a
-    visitor who stops using the site for CONV_TTL is signed out. The feed polls
-    with touch=False, so an open tab alone does not keep the session alive.
-    """
     conv_id = session.get('conv')
     conv_h = session.get('conv_h')
     conv_t = session.get('conv_t', 0)
@@ -491,7 +498,6 @@ def has_unread(db, cid):
 
 
 def mark_seen(db, row):
-    """Record the newest message the visitor has seen. Writes only when something is new."""
     last = db.execute('SELECT coalesce(max(id),0) FROM msgs WHERE conv=?', (row['id'],)).fetchone()[0]
     if last > row['seen_id']:
         db.execute('UPDATE convs SET seen_id=? WHERE id=?', (last, row['id']))
@@ -511,13 +517,6 @@ def decrypt(cid, sender, blob):
 
 
 def stash_credentials(db, conv_id, cid, sec):
-    """Store a new thread's Ticket and Key encrypted on the server. Return a one-time token.
-
-    Only the token goes to the browser. The database keeps only its hash, and the
-    credentials are encrypted with the message key, so a database dump does not
-    expose them.
-    """
-    # Drop reveals that expired without being shown, so they don't linger until the daily purge.
     db.execute('DELETE FROM reveals WHERE created<?', (NOW() - REVEAL_TTL,))
 
     token = secrets.token_urlsafe(32)
@@ -532,10 +531,6 @@ def stash_credentials(db, conv_id, cid, sec):
 
 
 def take_credentials(db):
-    """Return (ticket, key) once, for the browser that created the thread. Otherwise None.
-
-    The row is deleted on the first read, so a second load shows nothing.
-    """
     token = session.pop('reveal', None)
     if not isinstance(token, str) or not token:
         return None
@@ -594,16 +589,11 @@ def begin_conv_write(db, m):
     db.commit()
     db.execute('BEGIN IMMEDIATE')
     if conv_bytes(db) + len(m.encode()) + BLOB_OVERHEAD > C.conv_quota:
-        log.warning('conv_quota_exceeded')  # visible in the journal; also shown on the dashboard
+        log.warning('conv_quota_exceeded')
         abort(503)
 
 
 def thread_send_block(db, cid, incoming):
-    """Per-thread limits for visitor messages, read from the database.
-
-    Call inside the write transaction opened by begin_conv_write, so two concurrent
-    requests cannot both slip under a limit. Returns None, 'rate' or 'full'.
-    """
     t = NOW()
     minute, hour, total, size = db.execute(
         "SELECT coalesce(sum(created>?),0), coalesce(sum(created>?),0), count(*), "
@@ -634,14 +624,16 @@ def fmt_dt(n):
 
 
 def fmt_remaining(secs):
-    d, r = divmod(max(secs, 0), 86400)
+    d, r = divmod(max(int(secs), 0), 86400)
     h, r = divmod(r, 3600)
     m = r // 60
+    if not (d or h or m):
+        return "less than 1 minute"
     parts = [f"{d}d"] if d else []
     if d or h:
         parts.append(f"{h}h")
     parts.append(f"{m}m")
-    return " ".join(parts) if (d or h or m) else "less than 1 minute"
+    return " ".join(parts)
 
 
 def type_label(name):
@@ -721,7 +713,7 @@ BASE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <nav>
 <a href="/" class="{{'on' if request.path=='/' else ''}}">Notices</a>
 <a href="/downloads" class="{{'on' if request.path.startswith('/downloads') else ''}}">Downloads</a>
-<a href="/contact" class="{{'on' if request.path.startswith(('/contact','/resume','/thread')) else ''}}">Contact</a>
+<a href="/contact" class="{{'on' if request.path.startswith(('/contact','/resume','/thread','/burn')) else ''}}">Contact</a>
 </nav></header>
 {% if is_admin %}
 <nav class="top sub">
@@ -798,7 +790,10 @@ FILE_BODY = (
 TALK_BODY = (
     "<h1>Message the operator</h1>"
     "<p class=mute>Anonymous and simple. No account, e-mail or name.</p>"
-    "<div class=actions><a class='btn pri' href='/contact/start'>Write a new message</a>"
+    "{% if paused %}<div class=card><b>New messages are paused for now.</b> "
+    "The operator is not accepting new threads at the moment. Please check back later. "
+    "If you already have a thread, you can still resume it.</div>{% endif %}"
+    "<div class=actions>{% if not paused %}<a class='btn pri' href='/contact/start'>Write a new message</a>{% endif %}"
     "<a class=btn href='/resume'>Resume a thread</a></div>"
     "<p>Writing a message gives you a Ticket and a Key. Save both. They are the only way back in.</p>"
     "<details class=card><summary>Things to know</summary><ul>"
@@ -806,6 +801,8 @@ TALK_BODY = (
     "<li>Anyone holding both can read and write in your thread, so keep them private.</li>"
     "<li>Messages are encrypted at rest, but the operator can read them. This is not end-to-end encryption.</li>"
     "<li>Replies are not instant. The operator answers when available.</li>"
+    "<li>You can permanently delete your thread at any time with your Ticket and Key: "
+    "<a href='/burn'>delete a thread</a>.</li>"
     "<li>Messages are limited to 4000 characters, threads have a message limit, and new threads per hour are limited.</li>"
     "{% if days %}<li>Threads with no activity for {{days}} days may be deleted.</li>{% endif %}"
     "</ul></details>"
@@ -818,6 +815,15 @@ NEW_BODY = (
     "<label>Your message<textarea name=m maxlength=4000 rows=8 required></textarea></label>"
     "<button class='btn pri'>Send message</button></form>"
     "<p class=mute>Already have a thread? <a href='/resume'>Resume it</a>.</p>"
+)
+
+PAUSED_BODY = (
+    "<h1>New messages are paused</h1>"
+    "<div class=card><p>The operator has temporarily stopped accepting new threads. "
+    "Nothing is wrong on your side, and no message was sent.</p>"
+    "<p class=mute>Please try again later. If you already have a thread, "
+    "you can still <a href='/resume'>resume it</a>.</p></div>"
+    "<p><a class='btn pri' href='/contact'>Back to contact</a></p>"
 )
 
 CREATED_BODY = (
@@ -835,6 +841,28 @@ RESUME_FORM = (
     "<p class=mute>Enter the Ticket and Key you saved after sending your first message.</p>"
 )
 
+BURN_BODY = (
+    "<div class=narrow><h1>Delete a thread</h1>"
+    "{% if err %}<div class=alert>{{err}}</div>{% endif %}"
+    "<p class=mute>This permanently deletes the thread and every message in it from the server, "
+    "for you and for the operator. It cannot be undone.</p>"
+    "<form method=post class=card>" + CS +
+    "<label>Ticket<input name=cid required autocomplete=off></label>"
+    "<label>Key<input name=sec type=password required autocomplete=off></label>"
+    "<label class=chk><input type=checkbox name=sure value=1 required> I understand this is permanent</label>"
+    "<button class='btn pri'>Delete thread permanently</button></form>"
+    "<p class=mute>The operator may already have read or copied your messages, and deleting cannot undo that. "
+    "Your Ticket and Key are required even if this browser is already signed in.</p></div>"
+)
+
+BURNED_BODY = (
+    "<div class=narrow><h1>Thread deleted</h1>"
+    "<p>The thread and all its messages were removed from the server. "
+    "The Ticket and Key no longer work.</p>"
+    "<p class=mute>If you want to talk to the operator again, you can start a new thread.</p>"
+    "<p><a class='btn pri' href='/contact'>Back to contact</a></p></div>"
+)
+
 THREAD_BODY = (
     "<h1>Your thread</h1>"
     "<form method=post class=composer>" + CS +
@@ -845,6 +873,7 @@ THREAD_BODY = (
     "<form method=post action='/thread/leave'>" + CS +
     "<div class=actions><button class=btn>Close thread</button>"
     "<span class=mute>Only signs you out in this browser. Your messages stay.</span></div></form>"
+    "<p class=mute><a href='/burn'>Permanently delete this thread…</a></p>"
 )
 
 ADMIN_LOGIN_BODY = (
@@ -856,6 +885,14 @@ ADMIN_LOGIN_BODY = (
 
 DASHBOARD_BODY = (
     "<h1>Overview</h1>"
+    "<div class=card><p>New threads: "
+    "{% if paused %}<span class='pill bad'>Paused</span>{% else %}<span class='pill ok'>Open</span>{% endif %}</p>"
+    "<p class=mute>While paused, visitors cannot start new threads and see a friendly notice. "
+    "Existing threads keep working.</p>"
+    "<form method=post action='{{a}}/pause'>" + CS +
+    "<input type=hidden name=state value='{% if paused %}open{% else %}paused{% endif %}'>"
+    "<button class='btn{% if not paused %} pri{% endif %}'>"
+    "{% if paused %}Resume new threads{% else %}Pause new threads{% endif %}</button></form></div>"
     "<div class=card><p><b>{{n[0]}}</b> files · <b>{{n[1]}}</b> threads · "
     "<b>{{n[2]}}</b> awaiting reply</p>"
     "<progress value='{{used}}' max='{{qraw}}'></progress>"
@@ -959,6 +996,16 @@ ADMIN_CONV_BODY = (
     "<input type=hidden name=del value=1><button class=btn>Delete thread</button></form>"
 )
 
+CONFIRM_BODY = (
+    "<div class=narrow><h1>{{title}}</h1>"
+    "<p class=mute>This cannot be undone.</p>"
+    "<form method=post class=card>" + CS +
+    "{% for k, v in fields %}<input type=hidden name='{{k}}' value='{{v}}'>{% endfor %}"
+    "<input type=hidden name=confirm value=1>"
+    "<div class=actions><a class=btn href='{{back}}'>Cancel</a>"
+    "<button class='btn pri'>Yes, delete</button></div></form></div>"
+)
+
 
 def page(body, **ctx):
     return render_template_string(BASE + body + FOOT, adm_root=C.admin, is_admin=in_admin_area(), **ctx)
@@ -1021,9 +1068,6 @@ def guard():
             if feed:
                 return feed_page("<p class=none>Session expired. Reload the page.</p>", refresh=False), 401
             return redirect(C.admin + "/signin")
-        # The session touch above is a write. Commit it now so the SQLite write lock is
-        # not held while the request body (possibly a slow upload over Tor) is read below.
-        # With several threads, holding it would stall every visitor's message.
         database().commit()
 
     if request.method == "POST":
@@ -1211,27 +1255,33 @@ def attachment(aid):
 
 @app.get('/contact')
 def talk():
-    return page(talk_nav('how') + TALK_BODY, days=C.retention // 86400)
+    return page(talk_nav('how') + TALK_BODY, days=C.retention // 86400, paused=contact_paused(database()))
 
 
 @app.route('/contact/start', methods=['GET', 'POST'])
 def talk_new():
+    db = database()
+    if contact_paused(db):
+        return page(talk_nav('new') + PAUSED_BODY), (503 if request.method == 'POST' else 200)
+
     if request.method == 'GET':
         return page(talk_nav('new') + NEW_BODY)
-
-    if session_limited('new', 3, 3600) or limited('new', *GLOBAL_NEW):
-        abort(429)
 
     m = request.form.get('m', '').strip()
     if not m or len(m) > 4000:
         abort(400)
 
-    # Shared byte budget across all visitors: bounds how fast the message store can fill,
-    # even when each request arrives with a fresh cookie.
-    if limited_weight('inbound', len(m.encode()) + BLOB_OVERHEAD + THREAD_OVERHEAD, *GLOBAL_INBOUND):
+    weight = len(m.encode()) + BLOB_OVERHEAD + THREAD_OVERHEAD
+    if (
+        session_limited('new', 3, 3600, hit=False)
+        or limited('new', *GLOBAL_NEW, hit=False)
+        or limited_weight('inbound', weight, *GLOBAL_INBOUND, hit=False)
+    ):
         abort(429)
+    session_limited('new', 3, 3600)
+    limited('new', *GLOBAL_NEW)
+    limited_weight('inbound', weight, *GLOBAL_INBOUND)
 
-    db = database()
     begin_conv_write(db, m)
 
     cid, sec = secrets.token_urlsafe(16), secrets.token_urlsafe(32)
@@ -1247,7 +1297,6 @@ def talk_new():
         (conv_id, 'v', encrypt(conv_id, 'v', m), t),
     )
 
-    # The credentials go into the database, not the cookie. Only the opaque token is kept in the session.
     token = stash_credentials(db, conv_id, cid, sec)
     db.commit()
 
@@ -1259,7 +1308,6 @@ def talk_new():
 
 @app.get('/contact/created')
 def talk_created():
-    session.pop('fresh', None)  # discard any cookie written by the previous version
     creds = take_credentials(database())
     if not creds:
         return redirect('/contact', 303)
@@ -1320,20 +1368,24 @@ def chat():
             if len(m) > 4000:
                 abort(400)
             size = len(m.encode())
+            weight = size + BLOB_OVERHEAD
             if (
-                session_limited('send', 10, 60)
-                or limited('send', *GLOBAL_SEND)
-                or limited_weight('inbound', size + BLOB_OVERHEAD, *GLOBAL_INBOUND)
+                session_limited('send', 10, 60, hit=False)
+                or limited('send', *GLOBAL_SEND, hit=False)
+                or limited_weight('inbound', weight, *GLOBAL_INBOUND, hit=False)
             ):
                 abort(429)
+            session_limited('send', 10, 60)
+            limited('send', *GLOBAL_SEND)
+            limited_weight('inbound', weight, *GLOBAL_INBOUND)
 
             begin_conv_write(db, m)
             if not db.execute('SELECT 1 FROM convs WHERE id=?', (row['id'],)).fetchone():
                 abort(404)
 
-            # Limits that clearing cookies cannot reset: they are counted from the thread's own rows.
             blocked = thread_send_block(db, row['id'], size)
             if blocked == 'full':
+                db.rollback()
                 return page(
                     talk_nav('chat') +
                     "<div class=narrow><div class=alert>This thread has reached its message limit. "
@@ -1347,7 +1399,6 @@ def chat():
                 'INSERT INTO msgs(conv,sender,blob,created) VALUES(?,?,?,?)',
                 (row['id'], 'v', encrypt(row['id'], 'v', m), NOW()),
             )
-            # A visitor reply makes the thread open again for the operator.
             db.execute("UPDATE convs SET updated=?, status='open' WHERE id=?", (NOW(), row['id']))
             db.commit()
 
@@ -1373,6 +1424,66 @@ def chat_leave():
     return redirect('/contact', 303)
 
 
+@app.route('/burn', methods=['GET', 'POST'])
+def burn():
+    if request.method == 'GET':
+        return page(talk_nav(None) + BURN_BODY, err='')
+
+    if (
+        limited('read_fail', *GLOBAL_READ_FAIL, hit=False)
+        or session_limited('burn', 10, 600, hit=False)
+    ):
+        abort(429)
+
+    cid = request.form.get('cid', '').strip()
+    sec = request.form.get('sec', '').strip()
+
+    row = None
+    if len(cid) <= 128 and len(sec) <= 128:
+        row = database().execute('SELECT * FROM convs WHERE idhash=?', (digest(cid),)).fetchone()
+
+    stored = row['sechash'] if row else digest('-')
+    ok = hmac.compare_digest(stored, digest(sec)) and row is not None
+
+    if not ok:
+        limited('read_fail', *GLOBAL_READ_FAIL)
+        session_limited('burn', 10, 600)
+        return page(
+            talk_nav(None) + BURN_BODY,
+            err='The Ticket or Key does not match. Check for typos or extra spaces.',
+        ), 403
+
+    if request.form.get('sure') != '1':
+        return page(
+            talk_nav(None) + BURN_BODY,
+            err='Tick the box to confirm that you want to delete this thread permanently.',
+        ), 400
+
+    db = database()
+    db.commit()
+    db.execute('BEGIN IMMEDIATE')
+    cur = db.execute(
+        'DELETE FROM convs WHERE id=? AND idhash=? AND sechash=?',
+        (row['id'], row['idhash'], row['sechash']),
+    )
+    db.commit()
+    if cur.rowcount == 0:
+        abort(404)
+
+    if session.get('conv') == row['id']:
+        close_conv()
+    session.pop('reveal', None)
+
+    scrub_wal(db)
+    log.info('conversation_burned')
+    return redirect('/burned', 303)
+
+
+@app.get('/burned')
+def burned():
+    return page(talk_nav(None) + BURNED_BODY)
+
+
 @app.route(C.admin + '/signin', methods=['GET', 'POST'])
 def login():
     if request.method == 'GET':
@@ -1381,14 +1492,10 @@ def login():
     pw = request.form.get('pw', '')
     ok = False
 
-    # Failed-attempt throttle. Checked before any Argon2 work and without recording a hit,
-    # so refused requests cost no CPU and do not extend the window: it simply ages out.
     if limited('login_fail', *LOGIN_FAIL, hit=False):
         abort(429)
 
     if 0 < len(pw) <= MAX_PASSWORD_LEN:
-        # Bound concurrent Argon2 work. A request refused here is not a failed login
-        # and is not counted against LOGIN_FAIL.
         if not LOGIN_SLOTS.acquire(blocking=False):
             abort(429)
         try:
@@ -1437,16 +1544,28 @@ def logout():
 def dashboard():
     db = database()
     n = db.execute(
-        'SELECT (SELECT count(*) FROM files),'
-        '(SELECT count(*) FROM convs),'
+        'SELECT (SELECT count() FROM files),'
+        '(SELECT count() FROM convs),'
         "(SELECT count(*) FROM convs WHERE status='open')"
     ).fetchone()
     return page(
         DASHBOARD_BODY,
         n=n, used=used_bytes(db), qraw=C.quota,
         cused=conv_bytes(db), cqraw=C.conv_quota, cquota=fmt_size(C.conv_quota),
-        sz=fmt_size, quota=fmt_size(C.quota), a=C.admin,
+        sz=fmt_size, quota=fmt_size(C.quota), a=C.admin, paused=contact_paused(db),
     )
+
+
+@app.post(C.admin + '/pause')
+def admin_pause():
+    state = request.form.get('state', '')
+    if state not in ('paused', 'open'):
+        abort(400)
+    db = database()
+    set_setting(db, 'contact_paused', '1' if state == 'paused' else '0')
+    db.commit()
+    log.info('contact_paused' if state == 'paused' else 'contact_resumed')
+    return redirect(C.admin, 303)
 
 
 def safe_name(name):
@@ -1536,7 +1655,6 @@ def attachment_count(db, nid):
 
 
 def stage_upload(up, limit):
-    """Stream an upload to a private temp file, hashing as it goes."""
     fid = secrets.token_hex(16)
     tmp = C.files / ('.' + fid + '.part')
     total = 0
@@ -1569,7 +1687,7 @@ def store(db, items, limit, prepare, insert):
         db.commit()
         db.execute('BEGIN IMMEDIATE')
 
-        if used_bytes(db) + sum(s[2] for s in staged) > C.quota:
+        if staged and used_bytes(db) + sum(s[2] for s in staged) > C.quota:
             raise ValueError
 
         prepare()
@@ -1647,7 +1765,6 @@ def sweep_store(db=None, delete=False):
 
 
 def verify_hashes(db):
-    """Recompute SHA-256 for every stored file that has a recorded hash."""
     out = {'checked': 0, 'mismatch': 0, 'missing': 0}
     rows = db.execute(
         'SELECT id, sha256 FROM files WHERE sha256 IS NOT NULL '
@@ -1728,6 +1845,13 @@ def admin_notices():
 
         elif action == 'delete':
             nid = parse_id(request.form.get('id', ''))
+            if not request.form.get('confirm'):
+                return page(
+                    CONFIRM_BODY,
+                    title='Delete this notice and its attachments?',
+                    fields=[('action', 'delete'), ('id', str(nid))],
+                    back=C.admin + '/posts',
+                )
             ids = [r['id'] for r in db.execute('SELECT id FROM attachments WHERE notice=?', (nid,))]
             cur = db.execute('DELETE FROM notices WHERE id=?', (nid,))
             if cur.rowcount == 0:
@@ -1777,6 +1901,13 @@ def admin_files():
     if request.method == 'POST':
         if request.form.get('del'):
             f = getfile(request.form.get('del', ''))
+            if not request.form.get('confirm'):
+                return page(
+                    CONFIRM_BODY,
+                    title=f"Delete file {f['name']}?",
+                    fields=[('del', f['id'])],
+                    back=C.admin + '/downloads',
+                )
             cur = db.execute('DELETE FROM files WHERE id=?', (f['id'],))
             if cur.rowcount == 0:
                 abort(404)
@@ -1840,7 +1971,15 @@ def admin_conv(cid):
 
     if request.method == 'POST':
         if request.form.get('del'):
+            if not request.form.get('confirm'):
+                return page(
+                    CONFIRM_BODY,
+                    title=f'Delete thread #{cid}?',
+                    fields=[('del', '1')],
+                    back=C.admin + f'/threads/{cid}',
+                )
             db.execute('DELETE FROM convs WHERE id=?', (cid,))
+            scrub_wal(db)
             log.info('conversation_deleted')
             return redirect(C.admin + '/threads', 303)
 
@@ -1854,7 +1993,6 @@ def admin_conv(cid):
                 (cid, 'o', encrypt(cid, 'o', m), NOW()),
             )
         except sqlite3.IntegrityError:
-            # The thread was deleted between the existence check and the insert.
             abort(404)
 
         db.execute("UPDATE convs SET updated=?, status='answered' WHERE id=?", (NOW(), cid))
@@ -1963,6 +2101,7 @@ def cli():
             db.execute('DELETE FROM reveals WHERE created<?', (NOW() - REVEAL_TTL,))
             db.execute('DELETE FROM sessions WHERE created<? OR last<?', (NOW() - 28800, NOW() - 900))
             db.commit()
+            scrub_wal(db)
             r = sweep_store(db, delete=True)
             print(f"purged; removed orphans={r['orphans']} stale_parts={r['stale_parts']}; missing={r['missing']}")
 
