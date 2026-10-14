@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="google-site-verification" content="HurBP98GflOEa0XVzt5VmurFWJRN1a0U0_7DIHo_P7E" />
-<title>Tiny Desk – Anonymous notice board and message desk for Tor onion services (Flask + SQLite)</title>
-<meta name="description" content="Tiny Desk is a minimal, JavaScript-free, open-source notice board and anonymous message desk for Tor onion services. One Python file, Flask, SQLite, AES-256-GCM encryption.">
+<title>Tiny Desk: Anonymous Message Desk for Tor Onion Services</title>
+<meta name="description" content="Self-hosted, JavaScript-free notice board and anonymous message desk for Tor onion services. Flask + SQLite, one Python file, AES-256-GCM at rest.">
 <meta name="keywords" content="tor onion service, anonymous messaging, flask, sqlite, notice board, self-hosted, privacy, javascript-free, python, hidden service">
 <meta name="author" content="{{OWNER}}">
 <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1">
@@ -14,18 +14,20 @@
 <!-- Open Graph -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Tiny Desk">
-<meta property="og:title" content="Tiny Desk – Anonymous notice board for Tor onion services">
-<meta property="og:description" content="Minimal, JavaScript-free notice board and anonymous message desk for Tor onion services. Flask + SQLite, one file.">
+<meta property="og:title" content="Tiny Desk: Anonymous Message Desk for Tor Onion Services">
+<meta property="og:description" content="Self-hosted, JavaScript-free notice board and anonymous message desk for Tor onion services. Flask + SQLite, one file.">
 <meta property="og:url" content="{{SITE}}">
 <meta property="og:image" content="{{SITE}}og-image.png">
+<meta property="og:image:alt" content="Tiny Desk, an anonymous message desk for Tor onion services">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 
 <!-- Twitter / X -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Tiny Desk – Anonymous notice board for Tor onion services">
+<meta name="twitter:title" content="Tiny Desk: Anonymous Message Desk for Tor Onion Services">
 <meta name="twitter:description" content="JavaScript-free notice board and anonymous message desk for Tor. Flask + SQLite, one file.">
 <meta name="twitter:image" content="{{SITE}}og-image.png">
+<meta name="twitter:image:alt" content="Tiny Desk, an anonymous message desk for Tor onion services">
 
 <!-- Structured data (generated at build time: version, dates, FAQ) -->
 <script type="application/ld+json">
@@ -113,6 +115,7 @@ footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem}
     <a class="logo" href="{{BASE}}">◈ Tiny Desk</a>
     <nav aria-label="Primary">
       <a href="#features">Features</a>
+      <a href="#compare">Compare</a>
       {{NAV_RELEASE}}
       <a href="#docs">Docs</a>
       <a href="#faq">FAQ</a>
@@ -173,6 +176,27 @@ footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem}
   </div>
 </section>
 
+<section id="compare">
+  <div class="wrap">
+    <h2>Tiny Desk vs. similar tools</h2>
+    <p class="muted">Pick the tool that matches your threat model. Tiny Desk is a lightweight contact desk, not a whistleblowing platform.</p>
+    <div class="grid">
+      <article class="card">
+        <h3><a href="https://github.com/scidsg/hushline">Hush Line</a></h3>
+        <p>Built mainly as a one-way tip line with PGP-encrypted messages. Choose it when the server operator must not read messages. Tiny Desk adds two-way threads, notices and downloads, but the operator can read messages.</p>
+      </article>
+      <article class="card">
+        <h3><a href="https://securedrop.org/">SecureDrop</a> and <a href="https://globaleaks.org/">GlobaLeaks</a></h3>
+        <p>Full whistleblowing platforms for newsrooms and organizations. Choose them for high-risk sources. Tiny Desk is far simpler to run and offers less protection.</p>
+      </article>
+      <article class="card">
+        <h3><a href="https://onionshare.org/">OnionShare</a></h3>
+        <p>A desktop app that starts a temporary onion service for sharing files, receiving files, hosting a page or chatting. Tiny Desk is a persistent server with threads, notices and downloads.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
 {{RELEASE_SECTION}}
 
 <section id="docs">
@@ -210,4 +234,4 @@ footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem}
 </footer>
 
 </body>
-  </html>
+</html>
