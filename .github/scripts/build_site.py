@@ -37,8 +37,8 @@ TOKEN = os.environ.get("GITHUB_TOKEN")
 NOW = dt.datetime.now(dt.timezone.utc)
 
 FALLBACK_DESC = (
-    "Minimal, JavaScript-free notice board and anonymous message desk "
-    "for Tor onion services. Flask + SQLite, one file."
+    "Self-hosted, JavaScript-free notice board and anonymous message desk "
+    "for Tor onion services. Flask + SQLite, one Python file, AES-256-GCM at rest."
 )
 
 FAQ = [
@@ -54,8 +54,13 @@ FAQ = [
      "No. Visitors receive a Ticket and Key after sending a message. "
      "No account, e-mail or name is required."),
     ("Can I run it without Tor?",
-     "Yes, for local or internal use. Set <code>COOKIE_SECURE=1</code> only when you "
-     "serve it behind HTTPS."),
+     "Yes, for local or internal use. Set <code>COOKIE_SECURE=0</code> when serving plain "
+     "HTTP and keep the default <code>1</code> behind HTTPS."),
+    ("How is Tiny Desk different from Hush Line, SecureDrop or GlobaLeaks?",
+     "Those projects target whistleblowing and tip lines, where messages should stay "
+     "unreadable to the server. Tiny Desk is a lighter self-hosted desk with public notices, "
+     "downloads and two-way anonymous threads using a Ticket and Key. Messages are encrypted "
+     "at rest, but the operator can read them, so it is not a substitute for a whistleblowing platform."),
 ]
 
 esc = html.escape
@@ -244,6 +249,7 @@ def main():
         "@type": "SoftwareSourceCode",
         "@id": SITE + "#software",
         "name": "Tiny Desk",
+        "alternateName": ["TinyDesk", "Tiny Desk Tor onion message desk"],
         "description": description,
         "codeRepository": REPO_URL,
         "programmingLanguage": "Python",
@@ -315,7 +321,7 @@ def main():
     (OUT / "robots.txt").write_text(
         f"User-agent: *\nAllow: /\n\nSitemap: {SITE}sitemap.xml\n", encoding="utf-8")
 
-    llms = [f"# Tiny Desk", "", f"> {description}", ""]
+    llms = ["# Tiny Desk", "", f"> {description}", ""]
     if version:
         llms += [f"Latest release: {version} ({day(latest.get('published_at'))})", ""]
     llms += [
