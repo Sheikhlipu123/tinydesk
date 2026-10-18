@@ -16,7 +16,12 @@ Deployment notes
   HiddenServiceEnableIntroDoSRatePerSec 25
   HiddenServiceEnableIntroDoSBurstPerSec 200
 - First boot: python app.py init, then python app.py setpass, then start the service.
-- Schedule python app.py purge daily (see deploy/onionsite-purge.timer).
+- Schedule python app.py purge (hourly is recommended, see
+  deploy/onionsite-purge.timer). It removes old threads AND expired downloads.
+- Expired downloads stop being served the moment they expire. The purge task then
+  scrubs its metadata (name, description, size, hash), then securely shreds the stored file,
+  leaving only a tiny tombstone (id + expiry time) so visitors with an old link see
+  a clear "expired" page. Tombstones are removed after TOMBSTONE_SECONDS.
 - Schedule python app.py check to verify stored file hashes.
 """
 from __future__ import annotations
@@ -53,6 +58,8 @@ THREAD_OVERHEAD = 1024
 MAX_TIMER = 253402300799
 TIMER_RE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}')
 STALE_SECONDS = 3600
+TOMBSTONE_SECONDS = 30 * 86400
+SHRED_CHUNK = 1024 * 1024
 SQLITE_MAX_INT = 2 ** 63 - 1
 PART_RE = re.compile(r'\.[0-9a-f]{32}\.part')
 LOGIN_CONCURRENCY = 2
@@ -287,7 +294,8 @@ CREATE TABLE IF NOT EXISTS convs(
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'open',
-    seen_id INTEGER NOT NULL DEFAULT 0
+    seen_id INTEGER NOT NULL DEFAULT 0,
+    sgen INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS msgs(
@@ -314,7 +322,9 @@ CREATE TABLE IF NOT EXISTS files(
     size INTEGER NOT NULL,
     descr TEXT NOT NULL,
     sha256 TEXT,
-    created INTEGER NOT NULL
+    created INTEGER NOT NULL,
+    expires INTEGER,
+    purged INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS notices(
@@ -355,7 +365,10 @@ MIGRATIONS = (
     ("notices", "timer_until", "INTEGER"),
     ("notices", "censored", "INTEGER NOT NULL DEFAULT 0"),
     ("convs", "seen_id", "INTEGER NOT NULL DEFAULT 0"),
+    ("convs", "sgen", "INTEGER NOT NULL DEFAULT 0"),
     ("files", "sha256", "TEXT"),
+    ("files", "expires", "INTEGER"),
+    ("files", "purged", "INTEGER NOT NULL DEFAULT 0"),
     ("attachments", "sha256", "TEXT"),
 )
 
@@ -453,35 +466,44 @@ def admin_session_valid(touch=True):
     return True
 
 
-def open_conv(conv_id, idhash):
+def open_conv(conv_id, idhash, gen):
     session['conv'] = conv_id
     session['conv_h'] = idhash[:16]
     session['conv_t'] = NOW()
+    session['conv_g'] = gen
 
 
 def close_conv():
     session.pop('conv', None)
     session.pop('conv_h', None)
     session.pop('conv_t', None)
+    session.pop('conv_g', None)
 
 
 def current_conv(touch=True):
     conv_id = session.get('conv')
     conv_h = session.get('conv_h')
     conv_t = session.get('conv_t', 0)
+    conv_g = session.get('conv_g')
 
     if (
         not isinstance(conv_id, int)
         or isinstance(conv_id, bool)
         or not isinstance(conv_h, str)
         or not isinstance(conv_t, int)
+        or not isinstance(conv_g, int)
+        or isinstance(conv_g, bool)
         or NOW() - conv_t > CONV_TTL
     ):
         close_conv()
         return None
 
     row = database().execute('SELECT * FROM convs WHERE id=?', (conv_id,)).fetchone()
-    if not row or not hmac.compare_digest(conv_h.encode(), row['idhash'][:16].encode()):
+    if (
+        not row
+        or not hmac.compare_digest(conv_h.encode(), row['idhash'][:16].encode())
+        or conv_g != row['sgen']
+    ):
         close_conv()
         return None
 
@@ -609,6 +631,11 @@ def thread_send_block(db, cid, incoming):
 
 def is_expired(timer_until):
     return timer_until is not None and NOW() >= timer_until
+
+
+def file_gone(f):
+    """True when a download must no longer be served (expired or already purged)."""
+    return bool(f['purged']) or is_expired(f['expires'])
 
 
 def fmt_size(n):
@@ -770,11 +797,13 @@ HOME_BODY = (
 )
 
 FILES_BODY = (
-    "<h1>Downloads</h1><p class=mute>Files shared by the operator.</p>"
+    "<h1>Downloads</h1><p class=mute>Files shared by the operator. "
+    "Some files are temporary and disappear when they expire.</p>"
     "{% for f in rows %}"
     "<a class=card href='/downloads/{{f.id}}'>"
     "<span class=fi>{{ext(f.name)}}</span>"
-    "<span class=fm><b>{{f.name}}</b><small>{{f.descr}}</small></span>"
+    "<span class=fm><b>{{f.name}}</b><small>{{f.descr}}</small>"
+    "{% if f.expires is not none %}<small>Expires {{dtm(f.expires)}}</small>{% endif %}</span>"
     "<span class=fs>{{sz(f.size)}}<br>{{dt(f.created)}}</span></a>"
     "{% else %}<p class=none>No files yet.</p>{% endfor %}"
 )
@@ -784,7 +813,17 @@ FILE_BODY = (
     "<div class=card><span class=fi>{{ext(f.name)}}</span>"
     "<h1>{{f.name}}</h1><p class=mute>{{sz(f.size)}} · added {{dt(f.created)}}</p>"
     "{% if f.descr %}<p>{{f.descr}}</p>{% endif %}"
+    "{% if f.expires is not none %}<p><span class='pill ok'>Available until {{dtm(f.expires)}} · {{left}} left</span></p>{% endif %}"
     "<a class='btn pri' href='/downloads/{{f.id}}/download'>Download file</a></div>"
+)
+
+EXPIRED_BODY = (
+    "<div class=narrow><div class=bigcode>410</div><h1>This file has expired</h1>"
+    "<p>The operator set this download to expire"
+    "{% if when %} on <b>{{when}}</b>{% endif %}. "
+    "It is no longer available and its contents have been or will shortly be deleted from the server.</p>"
+    "<p class=mute>If you still need it, <a href='/contact'>message the operator</a> and ask them to share it again.</p>"
+    "<p><a class='btn pri' href='/downloads'>All downloads</a></p></div>"
 )
 
 TALK_BODY = (
@@ -872,7 +911,7 @@ THREAD_BODY = (
     "<iframe class=feedbox src='/thread/feed' title='Messages'></iframe>"
     "<form method=post action='/thread/leave'>" + CS +
     "<div class=actions><button class=btn>Close thread</button>"
-    "<span class=mute>Only signs you out in this browser. Your messages stay.</span></div></form>"
+    "<span class=mute>Signs you out of this thread everywhere and clears this browser's cookie. Your messages stay.</span></div></form>"
     "<p class=mute><a href='/burn'>Permanently delete this thread…</a></p>"
 )
 
@@ -895,6 +934,7 @@ DASHBOARD_BODY = (
     "{% if paused %}Resume new threads{% else %}Pause new threads{% endif %}</button></form></div>"
     "<div class=card><p><b>{{n[0]}}</b> files · <b>{{n[1]}}</b> threads · "
     "<b>{{n[2]}}</b> awaiting reply</p>"
+    "{% if n[3] %}<p class=mute><b>{{n[3]}}</b> expired file(s) waiting for the next purge run.</p>{% endif %}"
     "<progress value='{{used}}' max='{{qraw}}'></progress>"
     "<p class=mute>{{sz(used)}} of {{quota}} used by files</p>"
     "<progress value='{{cused}}' max='{{cqraw}}'></progress>"
@@ -904,7 +944,7 @@ DASHBOARD_BODY = (
     "</div>"
     "<h2>Manage</h2><ul>"
     "<li><a href='{{a}}/posts'>Posts</a>: notices, attachments and timers</li>"
-    "<li><a href='{{a}}/downloads'>Files</a>: upload or remove downloads</li>"
+    "<li><a href='{{a}}/downloads'>Files</a>: upload or remove downloads, set expiry</li>"
     "<li><a href='{{a}}/threads'>Threads</a>: read and answer messages</li>"
     "</ul>"
 )
@@ -962,12 +1002,27 @@ ADMIN_FILES_BODY = (
     "<form method=post enctype=multipart/form-data class=card>" + CS +
     "<label>File<input type=file name=f required></label>"
     "<label>Description<input name=d maxlength=300></label>"
+    "<label class=chk><input type=checkbox name=expire> Expire this download</label>"
+    "<label>Expires (UTC, not your local time)<input type=datetime-local name=expires_at></label>"
+    "<p class=mute>Expired files are hidden and blocked immediately. The scheduled purge task then "
+    "deletes the stored file and its details from the server.</p>"
     "<button class='btn pri'>Upload</button></form>"
     "{% for f in rows %}"
-    "<form method=post class=card>" + CS +
+    "<div class=card>"
+    "<div class=fm><b>{{f.name or 'Purged file'}}</b>"
+    "<small>{% if not f.purged %}{{sz(f.size)}} · {% endif %}"
+    "<span class='pill{{f.pill}}'>{{f.label}}</span></small></div>"
+    "{% if not f.purged %}"
+    "<form method=post>" + CS +
+    "<input type=hidden name=setexp value='{{f.id}}'>"
+    "<label class=chk><input type=checkbox name=expire {% if f.expires is not none %}checked{% endif %}> Expires</label>"
+    "<label>Expires (UTC, not your local time)<input type=datetime-local name=expires_at value='{{f.exp_val}}'></label>"
+    "<button class='btn sm'>Save expiry</button></form>"
+    "{% endif %}"
+    "<form method=post>" + CS +
     "<input type=hidden name=del value='{{f.id}}'>"
-    "<div class=actions><span class=fm><b>{{f.name}}</b><small>{{sz(f.size)}}</small></span>"
-    "<button class='btn sm'>Delete</button></div></form>"
+    "<div class=actions><span></span><button class='btn sm'>Delete</button></div></form>"
+    "</div>"
     "{% else %}<p class=none>No files yet.</p>{% endfor %}"
 )
 
@@ -1182,6 +1237,59 @@ def valid_id(value):
     return isinstance(value, str) and len(value) == 32 and all(c in '0123456789abcdef' for c in value)
 
 
+def secure_unlink(path, missing_ok=False):
+    """Best-effort secure delete: overwrite with random bytes, fsync, truncate, unlink.
+
+    Never follows symlinks and never overwrites a file that has other hard links.
+    If the overwrite fails the file is still unlinked. Note: on copy-on-write or
+    wear-levelled storage (SSD, btrfs, ZFS) an in-place overwrite cannot be
+    guaranteed; use full-disk encryption as the real protection.
+    """
+    path = Path(path)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        if missing_ok:
+            return
+        raise
+    except OSError:
+        fd = None
+
+    if fd is not None:
+        try:
+            st = os.fstat(fd)
+            if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
+                left = st.st_size
+                while left > 0:
+                    view = memoryview(os.urandom(min(left, SHRED_CHUNK)))
+                    while view:
+                        n = os.write(fd, view)
+                        view = view[n:]
+                        left -= n
+                os.fsync(fd)
+                os.ftruncate(fd, 0)
+                os.fsync(fd)
+        except OSError:
+            log.warning('shred_failed')
+        finally:
+            os.close(fd)
+
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        if not missing_ok:
+            raise
+
+    try:
+        dfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
+
+
 def stored_path(fid):
     if not valid_id(fid):
         abort(404)
@@ -1194,7 +1302,7 @@ def unlink_stored(ids):
             log.warning('unlink_skipped_invalid_id')
             continue
         try:
-            (C.files / fid).unlink()
+            secure_unlink(C.files / fid)
         except FileNotFoundError:
             pass
         except OSError:
@@ -1207,24 +1315,44 @@ def getfile(fid):
     return database().execute('SELECT * FROM files WHERE id=?', (fid,)).fetchone() or abort(404)
 
 
+def expired_page(f):
+    """Clear 410 page. Deliberately shows nothing but the expiry time (no name/description)."""
+    when = ''
+    if f['expires'] is not None:
+        try:
+            when = fmt_dt(f['expires'])
+        except (OverflowError, ValueError, OSError):
+            when = ''
+    return page(EXPIRED_BODY, when=when), 410
+
+
 @app.get('/downloads')
 def files():
+    rows = database().execute(
+        'SELECT * FROM files WHERE purged=0 AND (expires IS NULL OR expires>?) ORDER BY created DESC',
+        (NOW(),),
+    ).fetchall()
     return page(
         FILES_BODY,
-        rows=database().execute('SELECT * FROM files ORDER BY created DESC').fetchall(),
-        sz=fmt_size, dt=fmt_date, ext=type_label,
+        rows=rows,
+        sz=fmt_size, dt=fmt_date, dtm=fmt_dt, ext=type_label,
     )
 
 
 @app.get('/downloads/<fid>')
 def fileview(fid):
     f = getfile(fid)
-    return page(FILE_BODY, f=f, sz=fmt_size, dt=fmt_date, ext=type_label)
+    if file_gone(f):
+        return expired_page(f)
+    left = fmt_remaining(f['expires'] - NOW()) if f['expires'] is not None else ''
+    return page(FILE_BODY, f=f, left=left, sz=fmt_size, dt=fmt_date, dtm=fmt_dt, ext=type_label)
 
 
 @app.get('/downloads/<fid>/download')
 def download(fid):
     f = getfile(fid)
+    if file_gone(f):
+        return expired_page(f)
     p = stored_path(f['id'])
     if not p.is_file() or p.is_symlink():
         abort(404)
@@ -1300,7 +1428,7 @@ def talk_new():
     token = stash_credentials(db, conv_id, cid, sec)
     db.commit()
 
-    open_conv(conv_id, digest(cid))
+    open_conv(conv_id, digest(cid), 0)
     session['reveal'] = token
     log.info('conversation_created')
     return redirect('/contact/created', 303)
@@ -1351,7 +1479,7 @@ def conversation():
             '<p><a class="btn pri" href="/resume">Try again</a></p></div>'
         ), 403
 
-    open_conv(row['id'], row['idhash'])
+    open_conv(row['id'], row['idhash'], row['sgen'])
     return redirect('/thread', 303)
 
 
@@ -1420,8 +1548,19 @@ def chat_feed():
 
 @app.post('/thread/leave')
 def chat_leave():
-    close_conv()
-    return redirect('/contact', 303)
+    row = current_conv(touch=False)
+    if row:
+        # Server-side revocation: any copy of the old cookie stops working.
+        db = database()
+        db.execute('UPDATE convs SET sgen=sgen+1 WHERE id=?', (row['id'],))
+        db.commit()
+    session.clear()
+    resp = redirect('/contact', 303)
+    resp.delete_cookie(
+        app.config['SESSION_COOKIE_NAME'], path='/',
+        secure=C.cookie_secure, httponly=True, samesite='Strict',
+    )
+    return resp
 
 
 @app.route('/burn', methods=['GET', 'POST'])
@@ -1544,9 +1683,11 @@ def logout():
 def dashboard():
     db = database()
     n = db.execute(
-        'SELECT (SELECT count() FROM files),'
+        'SELECT (SELECT count() FROM files WHERE purged=0),'
         '(SELECT count() FROM convs),'
-        "(SELECT count(*) FROM convs WHERE status='open')"
+        "(SELECT count(*) FROM convs WHERE status='open'),"
+        '(SELECT count() FROM files WHERE purged=0 AND expires IS NOT NULL AND expires<=?)',
+        (NOW(),),
     ).fetchone()
     return page(
         DASHBOARD_BODY,
@@ -1592,11 +1733,16 @@ def attachment_ok(ext, head):
     return False
 
 
-def parse_timer():
-    if not request.form.get('timer'):
+def parse_when(flag, field, future=False):
+    """Parse an optional UTC datetime-local form field gated by a checkbox.
+
+    Returns a unix timestamp, or None when the checkbox is off. With future=True
+    the moment must still lie ahead (used for download expiry).
+    """
+    if not request.form.get(flag):
         return None
 
-    raw = request.form.get('timer_until', '').strip()
+    raw = request.form.get(field, '').strip()
     if not TIMER_RE.fullmatch(raw):
         abort(400)
 
@@ -1608,7 +1754,13 @@ def parse_timer():
     ts = calendar.timegm(dt.timetuple())
     if not 0 <= ts <= MAX_TIMER:
         abort(400)
+    if future and ts <= NOW():
+        abort(400)
     return ts
+
+
+def parse_timer():
+    return parse_when('timer', 'timer_until')
 
 
 def admin_notice(r):
@@ -1625,6 +1777,27 @@ def admin_notice(r):
     except (OverflowError, ValueError, OSError, TypeError):
         d['timer_val'] = ''
         d['timer_label'] = 'Timer: invalid value (re-save to fix)'
+    return d
+
+
+def admin_file(r):
+    d = dict(r)
+    t = r['expires']
+    d['exp_val'] = ''
+    try:
+        if t is not None:
+            d['exp_val'] = time.strftime('%Y-%m-%dT%H:%M', time.gmtime(t))
+        if r['purged']:
+            d['label'], d['pill'] = f'Expired · contents purged ({fmt_dt(t)})', ' bad'
+        elif t is None:
+            d['label'], d['pill'] = 'No expiry', ''
+        elif is_expired(t):
+            d['label'], d['pill'] = f'Expired {fmt_dt(t)} · purge pending', ' bad'
+        else:
+            d['label'], d['pill'] = f'Expires {fmt_dt(t)} · {fmt_remaining(t - NOW())} left', ' ok'
+    except (OverflowError, ValueError, OSError, TypeError):
+        d['exp_val'] = ''
+        d['label'], d['pill'] = 'Expiry: invalid value (re-save to fix)', ' bad'
     return d
 
 
@@ -1670,7 +1843,7 @@ def stage_upload(up, limit):
                 h.update(chunk)
                 out.write(chunk)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        secure_unlink(tmp, missing_ok=True)
         raise
 
     return fid, tmp, total, h.hexdigest()
@@ -1701,11 +1874,11 @@ def store(db, items, limit, prepare, insert):
     except BaseException:
         db.rollback()
         for fid in placed:
-            stored_path(fid).unlink(missing_ok=True)
+            secure_unlink(stored_path(fid), missing_ok=True)
         raise
     finally:
         for s in staged:
-            s[1].unlink(missing_ok=True)
+            secure_unlink(s[1], missing_ok=True)
 
 
 def attachment_inserter(db, holder):
@@ -1721,7 +1894,10 @@ def sweep_store(db=None, delete=False):
     cutoff = time.time() - STALE_SECONDS
     known = set()
     if db is not None:
-        known = {r[0] for r in db.execute('SELECT id FROM files UNION SELECT id FROM attachments')}
+        # Purged downloads keep a metadata tombstone but no file on disk.
+        known = {r[0] for r in db.execute(
+            'SELECT id FROM files WHERE purged=0 UNION SELECT id FROM attachments'
+        )}
 
     present = set()
     parts = []
@@ -1752,7 +1928,7 @@ def sweep_store(db=None, delete=False):
     if delete:
         for n in parts + orphans:
             try:
-                (C.files / n).unlink()
+                secure_unlink(C.files / n, missing_ok=True)
             except OSError:
                 log.warning('sweep_unlink_failed')
 
@@ -1764,10 +1940,45 @@ def sweep_store(db=None, delete=False):
     }
 
 
+def purge_expired_files(db):
+    """Scrub expired downloads' metadata, then securely delete their stored contents.
+
+    Under the write lock (so an admin extending an expiry cannot race it) the rows are
+    turned into tombstones (id + expiry time only) and committed. The files are shredded
+    AFTER the commit so the lock is never held during slow disk I/O. If a shred fails the
+    file is no longer referenced, so the orphan sweep that follows in `purge` retries it.
+    Tombstones are deleted after TOMBSTONE_SECONDS.
+    """
+    t = NOW()
+
+    db.commit()
+    db.execute('BEGIN IMMEDIATE')
+
+    ids = [
+        r['id'] for r in db.execute(
+            'SELECT id FROM files WHERE purged=0 AND expires IS NOT NULL AND expires<=?', (t,)
+        )
+    ]
+    for fid in ids:
+        db.execute(
+            "UPDATE files SET name='', descr='', sha256=NULL, size=0, created=expires, purged=1 WHERE id=?",
+            (fid,),
+        )
+
+    cur = db.execute(
+        'DELETE FROM files WHERE purged=1 AND expires<?', (t - TOMBSTONE_SECONDS,)
+    )
+    tombstones = cur.rowcount
+    db.commit()
+
+    unlink_stored(ids)
+    return len(ids), tombstones
+
+
 def verify_hashes(db):
     out = {'checked': 0, 'mismatch': 0, 'missing': 0}
     rows = db.execute(
-        'SELECT id, sha256 FROM files WHERE sha256 IS NOT NULL '
+        'SELECT id, sha256 FROM files WHERE purged=0 AND sha256 IS NOT NULL '
         'UNION ALL SELECT id, sha256 FROM attachments WHERE sha256 IS NOT NULL'
     ).fetchall()
 
@@ -1904,7 +2115,7 @@ def admin_files():
             if not request.form.get('confirm'):
                 return page(
                     CONFIRM_BODY,
-                    title=f"Delete file {f['name']}?",
+                    title=f"Delete file {f['name'] or '(purged)'}?",
                     fields=[('del', f['id'])],
                     back=C.admin + '/downloads',
                 )
@@ -1915,6 +2126,19 @@ def admin_files():
             unlink_stored([f['id']])
             log.info('file_deleted')
 
+        elif request.form.get('setexp'):
+            f = getfile(request.form.get('setexp', ''))
+            if f['purged']:
+                abort(404)
+            expires = parse_when('expire', 'expires_at', future=True)
+            cur = db.execute(
+                'UPDATE files SET expires=? WHERE id=? AND purged=0', (expires, f['id'])
+            )
+            if cur.rowcount == 0:
+                abort(404)
+            db.commit()
+            log.info('file_expiry_updated')
+
         else:
             up = request.files.get('f')
             if not up or not up.filename:
@@ -1922,11 +2146,12 @@ def admin_files():
 
             name = safe_name(up.filename)
             descr = request.form.get('d', '')[:300]
+            expires = parse_when('expire', 'expires_at', future=True)
 
             def insert(fid, total, sha, meta):
                 db.execute(
-                    'INSERT INTO files(id,name,size,descr,sha256,created) VALUES(?,?,?,?,?,?)',
-                    (fid, meta['name'], total, descr, sha, NOW()),
+                    'INSERT INTO files(id,name,size,descr,sha256,created,expires) VALUES(?,?,?,?,?,?,?)',
+                    (fid, meta['name'], total, descr, sha, NOW(), expires),
                 )
 
             try:
@@ -1939,7 +2164,7 @@ def admin_files():
 
     return page(
         ADMIN_FILES_BODY,
-        rows=db.execute('SELECT * FROM files ORDER BY created DESC').fetchall(),
+        rows=[admin_file(r) for r in db.execute('SELECT * FROM files ORDER BY created DESC')],
         sz=fmt_size,
     )
 
@@ -2079,6 +2304,10 @@ def cli():
             db = database()
             r = sweep_store(db)
             h = verify_hashes(db)
+            pending = db.execute(
+                'SELECT count() FROM files WHERE purged=0 AND expires IS NOT NULL AND expires<=?',
+                (NOW(),),
+            ).fetchone()[0]
             print(
                 f"store: orphans={r['orphans']} stale_parts={r['stale_parts']} "
                 f"missing={r['missing']} unexpected={r['unexpected']}"
@@ -2086,6 +2315,7 @@ def cli():
             print(
                 f"hashes: checked={h['checked']} mismatch={h['mismatch']} missing={h['missing']}"
             )
+            print(f"expired files awaiting purge={pending}")
             if r['missing'] or h['mismatch'] or h['missing']:
                 print('checks FAILED')
                 raise SystemExit(1)
@@ -2101,9 +2331,13 @@ def cli():
             db.execute('DELETE FROM reveals WHERE created<?', (NOW() - REVEAL_TTL,))
             db.execute('DELETE FROM sessions WHERE created<? OR last<?', (NOW() - 28800, NOW() - 900))
             db.commit()
+            expired, tombstones = purge_expired_files(db)
             scrub_wal(db)
             r = sweep_store(db, delete=True)
-            print(f"purged; removed orphans={r['orphans']} stale_parts={r['stale_parts']}; missing={r['missing']}")
+            print(
+                f"purged; expired files removed={expired} tombstones removed={tombstones}; "
+                f"removed orphans={r['orphans']} stale_parts={r['stale_parts']}; missing={r['missing']}"
+            )
 
 
 def boot():
