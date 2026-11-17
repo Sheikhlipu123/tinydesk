@@ -1,29 +1,3 @@
-"""Tiny Desk: notices, downloads and anonymous message threads.
-
-Deployment notes
-
-- Run exactly ONE gunicorn process (-w 1) with THREADS, so one slow or stalled
-  client cannot block everyone, while the in-memory limits stay in one place:
-  gunicorn -w 1 --worker-class gthread --threads 16 --timeout 60
-  --graceful-timeout 15 --keep-alive 5 --limit-request-line 2048
-  --limit-request-fields 50 -b 127.0.0.1:8000 app:app
-  (one command line; do not add --access-logfile). Set ONION_WORKERS to the
-  process count so the app can warn you if it is wrong.
-- Tor-side DoS defenses, in the HiddenServiceDir block of torrc
-  (PoW needs Tor 0.4.8+ built with it; tune the numbers):
-  HiddenServicePoWDefensesEnabled 1
-  HiddenServiceEnableIntroDoSDefense 1
-  HiddenServiceEnableIntroDoSRatePerSec 25
-  HiddenServiceEnableIntroDoSBurstPerSec 200
-- First boot: python app.py init, then python app.py setpass, then start the service.
-- Schedule python app.py purge (hourly is recommended, see
-  deploy/onionsite-purge.timer). It removes old threads AND expired downloads.
-- Expired downloads stop being served the moment they expire. The purge task then
-  scrubs its metadata (name, description, size, hash), then securely shreds the stored file,
-  leaving only a tiny tombstone (id + expiry time) so visitors with an old link see
-  a clear "expired" page. Tombstones are removed after TOMBSTONE_SECONDS.
-- Schedule python app.py check to verify stored file hashes.
-"""
 from __future__ import annotations
 import argparse, calendar, getpass, hashlib, hmac, logging, os, re, secrets, sqlite3, stat, sys, threading, time
 from datetime import datetime
@@ -32,6 +6,12 @@ from flask import Flask, Response, abort, g, redirect, render_template_string, r
 from werkzeug.exceptions import HTTPException
 from argon2 import PasswordHasher
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+IS_WINDOWS = os.name == 'nt'
+# Flags that do not exist on Windows are replaced by 0 (no-op); O_BINARY only exists on Windows.
+NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
+BINARY = getattr(os, 'O_BINARY', 0)
+DIRFLAG = getattr(os, 'O_DIRECTORY', 0)
 
 os.umask(0o077)
 
@@ -55,7 +35,8 @@ MAX_PUBLIC_NOTICES = 100
 PAGE_SIZE = 50
 BLOB_OVERHEAD = 28
 THREAD_OVERHEAD = 1024
-MAX_TIMER = 253402300799
+# Windows gmtime() only supports dates up to the end of year 3000.
+MAX_TIMER = 32535215999 if IS_WINDOWS else 253402300799
 TIMER_RE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}')
 STALE_SECONDS = 3600
 TOMBSTONE_SECONDS = 30 * 86400
@@ -94,6 +75,9 @@ def check_path(p, private, is_dir=False):
     kind = stat.S_ISDIR if is_dir else stat.S_ISREG
     if not kind(st.st_mode):
         raise RuntimeError(f"unexpected file type: {p.name}")
+    if IS_WINDOWS:
+        # POSIX owner and permission bits are not meaningful on Windows (NTFS ACLs apply).
+        return
     if st.st_uid != os.geteuid():
         raise RuntimeError(f"wrong owner: {p.name}")
     if st.st_mode & (0o077 if private else 0o027):
@@ -105,17 +89,23 @@ def ensure_private_dir(p):
     st = p.lstat()
     if not stat.S_ISDIR(st.st_mode):
         raise RuntimeError(f"unexpected file type: {p.name}")
-    if st.st_uid != os.geteuid():
-        raise RuntimeError(f"wrong owner: {p.name}")
-    if st.st_mode & 0o077:
-        p.chmod(0o700)
+    if not IS_WINDOWS:
+        if st.st_uid != os.geteuid():
+            raise RuntimeError(f"wrong owner: {p.name}")
+        if st.st_mode & 0o077:
+            p.chmod(0o700)
     check_path(p, True, True)
 
 
 class Config:
     def __init__(self):
-        self.secret_dir = Path(os.getenv("ONION_SECRETS", "/etc/onionsite"))
-        self.data_dir = Path(os.getenv("ONION_DATA", "/var/lib/onionsite"))
+        if IS_WINDOWS:
+            base = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "onionsite"
+            default_secret, default_data = base / "secrets", base / "data"
+        else:
+            default_secret, default_data = Path("/etc/onionsite"), Path("/var/lib/onionsite")
+        self.secret_dir = Path(os.getenv("ONION_SECRETS", str(default_secret)))
+        self.data_dir = Path(os.getenv("ONION_DATA", str(default_data)))
         self.admin_raw = os.getenv("ADMIN_PREFIX", "").strip("/")
         self.admin = "/" + self.admin_raw if self.admin_raw else "/admin-prefix-not-set"
         self.max_file = self.mb("MAX_FILE_MB", 25)
@@ -136,7 +126,7 @@ class Config:
         return value * MB
 
     def validate(self):
-        if os.geteuid() == 0:
+        if not IS_WINDOWS and os.geteuid() == 0:
             raise RuntimeError("must not run as root")
 
         if (
@@ -1247,7 +1237,10 @@ def secure_unlink(path, missing_ok=False):
     """
     path = Path(path)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+        if not NOFOLLOW and path.is_symlink():
+            # No O_NOFOLLOW on this platform (Windows): refuse to open symlinks, just unlink them.
+            raise OSError('symlink')
+        fd = os.open(path, os.O_WRONLY | NOFOLLOW | BINARY)
     except FileNotFoundError:
         if missing_ok:
             return
@@ -1280,14 +1273,16 @@ def secure_unlink(path, missing_ok=False):
         if not missing_ok:
             raise
 
-    try:
-        dfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    if DIRFLAG:
+        # Directory fsync is POSIX-only; Windows cannot open directories this way.
         try:
-            os.fsync(dfd)
-        finally:
-            os.close(dfd)
-    except OSError:
-        pass
+            dfd = os.open(path.parent, os.O_RDONLY | DIRFLAG)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
 
 
 def stored_path(fid):
@@ -1832,7 +1827,7 @@ def stage_upload(up, limit):
     tmp = C.files / ('.' + fid + '.part')
     total = 0
     h = hashlib.sha256()
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW | BINARY, 0o600)
 
     try:
         with os.fdopen(fd, 'wb') as out:
@@ -2258,7 +2253,7 @@ def write_admin_hash(hashed):
     p = C.secret_dir / 'admin.hash'
     tmp = C.secret_dir / '.admin.hash.tmp'
     tmp.unlink(missing_ok=True)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as out:
         out.write(hashed)
     os.replace(tmp, p)
