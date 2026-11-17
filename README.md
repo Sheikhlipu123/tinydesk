@@ -6,6 +6,7 @@
 <p align="center">
   <a href="https://sheikhlipu123.github.io/tinydesk/">Website</a> ·
   <a href="#setup">Setup</a> ·
+  <a href="#windows">Windows</a> ·
   <a href="#security-notes">Security</a>
 </p>
 <p align="center">
@@ -13,32 +14,36 @@
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
   <img src="https://img.shields.io/badge/no-JavaScript-orange" alt="No JavaScript">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey" alt="Linux, macOS, Windows">
 </p>
 
 ## Features
 
 - **Notices:** public posts with image or `.txt` attachments (up to 10 per upload, 50 per notice), optional countdown timers (set in UTC), draft and hide controls
-- **Downloads:** operator-uploaded files of any type, served as attachments
+- **Downloads:** operator-uploaded files of any type, served as attachments. Downloads can be set to expire: they stop being served the moment they expire, and the purge task then scrubs their details and securely deletes the stored file. Visitors with an old link see a clear "expired" page
 - **Anonymous messaging:** visitors write a message and get a Ticket and Key. No account, e-mail or name. Messages are stored AES-256-GCM encrypted. A "New reply" marker shows when the operator has answered
 - **Thread deletion:** anyone with the Ticket and Key can permanently delete their thread at `/burn`
 - **Pause switch:** the operator can pause new threads from the dashboard while existing threads keep working
 - **No JavaScript:** server-rendered pages. Message threads refresh through a meta-refresh iframe
-- **Hardening:** strict CSP, CSRF tokens on every POST, Argon2 admin password, short-lived admin sessions, request size limits, rate limits, strict permission checks on secrets and data directories, admin prefix requirement, magic-byte checks on attachments
-- **Housekeeping:** storage quotas, retention-based purge, orphan file sweep, SHA-256 verification of stored files
+- **Hardening:** strict CSP, CSRF tokens on every POST, Argon2 admin password, short-lived admin sessions, request size limits, rate limits, strict permission checks on secrets and data directories (Linux and macOS), admin prefix requirement, magic-byte checks on attachments
+- **Housekeeping:** storage quotas, retention-based purge, expired-download purge, orphan file sweep, SHA-256 verification of stored files
+- **Cross-platform:** runs on Linux, macOS and Windows (see [Windows](#windows))
 
 ## Requirements
 
 - Python 3.10+
-- A non-root user (the app refuses to run as root)
+- A non-root user on Linux and macOS (the app refuses to run as root)
 - Tor, to publish it as an onion service
 
 ```
 pip install -r requirements.txt
 ```
 
+On Windows, also install `waitress` (see [Windows](#windows)).
+
 ## Setup
 
-Pick your own directories and a hard-to-guess admin prefix:
+Pick your own directories and a hard-to-guess admin prefix (Linux and macOS shown; Windows users see [Windows](#windows)):
 
 ```
 export ONION_SECRETS=/etc/tinydesk
@@ -54,7 +59,7 @@ python app.py status
 
 `ADMIN_PREFIX` is required and has no default. It must be at least 10 characters, using only letters, digits, `_` and `-` (segments separated by `/` are allowed), and must not start with a public path name such as `downloads` or `contact`. The admin login is at `/<ADMIN_PREFIX>/signin`.
 
-The app checks ownership and permissions at startup. The secrets and data directories must belong to the running user and not be accessible to others, otherwise it refuses to start.
+On Linux and macOS the app checks ownership and permissions at startup. The secrets and data directories must belong to the running user and not be accessible to others, otherwise it refuses to start. On Windows these POSIX checks are skipped (see [Windows](#windows)).
 
 Keep the same environment variables set for every command and for the service.
 
@@ -64,14 +69,14 @@ Sign in at `/<ADMIN_PREFIX>/signin`. Sessions end after 15 minutes of inactivity
 
 | Page | Purpose |
 |---|---|
-| Overview | Storage use, thread counts, pause or resume new threads |
+| Overview | Storage use, thread counts, expired files awaiting purge, pause or resume new threads |
 | Posts | Create, edit, hide, delete notices. Manage attachments and timers |
-| Files | Upload or delete downloads |
+| Files | Upload or delete downloads, set or change an expiry time (UTC) |
 | Threads | Read and answer messages, delete threads |
 
 ## Deployment notes
 
-Run exactly one Gunicorn process with threads, so one slow or stalled client cannot block everyone else while the in-memory limits stay in one place:
+Run exactly one Gunicorn process with threads, so one slow or stalled client cannot block everyone else while the in-memory limits stay in one place (Linux and macOS; on Windows use waitress, see [Windows](#windows)):
 
 ```
 export ONION_WORKERS=1
@@ -92,7 +97,38 @@ HiddenServiceEnableIntroDoSRatePerSec 25
 HiddenServiceEnableIntroDoSBurstPerSec 200
 ```
 
-Schedule the maintenance commands with a systemd timer or cron: `purge` daily and `check` regularly.
+Schedule the maintenance commands with a systemd timer or cron (Task Scheduler on Windows): `purge` hourly, so expired downloads are deleted promptly, and `check` regularly.
+
+## Windows
+
+Tiny Desk runs on Windows with a few differences:
+
+- **Server:** Gunicorn does not run on Windows. Use waitress, which is also a single process with threads, so the in-memory limits stay in one place:
+
+  ```
+  pip install waitress
+  waitress-serve --listen=127.0.0.1:8000 --threads=16 app:app
+  ```
+
+- **Setup (PowerShell):**
+
+  ```
+  $env:ONION_SECRETS = "$env:LOCALAPPDATA\tinydesk\secrets"
+  $env:ONION_DATA = "$env:LOCALAPPDATA\tinydesk\data"
+  $env:ADMIN_PREFIX = python -c "import secrets;print(secrets.token_hex(8))"
+
+  python app.py init
+  python app.py setpass
+  python app.py status
+  ```
+
+  If you set no directories, they default to `%LOCALAPPDATA%\onionsite\secrets` and `%LOCALAPPDATA%\onionsite\data`. Use the same environment variables for every command and for the service.
+
+- **Permissions:** the POSIX owner and permission-bit checks are skipped on Windows, because they do not apply. Keep the secrets and data folders inside your user profile or restrict them with NTFS permissions so only your account can read them.
+- **Scheduling:** use Task Scheduler instead of cron or systemd to run `python app.py purge` (hourly) and `python app.py check`.
+- **Tor:** use the `torrc` file of your Tor installation (for example the Tor Expert Bundle) with a Windows path for `HiddenServiceDir`, for example `C:\tor\tinydesk\`.
+- **Dates:** timers and expiry times on Windows are limited to the end of the year 3000.
+- **Secure delete:** shredding is best effort. A file that is still open, for example during a download, cannot be deleted at that moment. The failure is logged and the next `purge` removes the leftover file.
 
 ## Run
 
@@ -103,7 +139,9 @@ export COOKIE_SECURE=0
 python app.py
 ```
 
-For production, use the Gunicorn command above.
+On Windows PowerShell use `$env:COOKIE_SECURE = "0"` instead of `export`.
+
+For production, use the Gunicorn command above (waitress on Windows).
 
 ## Tor
 
@@ -121,8 +159,8 @@ HiddenServicePort 80 127.0.0.1:8000
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ONION_SECRETS` | `/etc/onionsite` | Directory for `session.key`, `msg.key`, `admin.hash` |
-| `ONION_DATA` | `/var/lib/onionsite` | Database and uploaded files |
+| `ONION_SECRETS` | `/etc/onionsite` (Windows: `%LOCALAPPDATA%\onionsite\secrets`) | Directory for `session.key`, `msg.key`, `admin.hash` |
+| `ONION_DATA` | `/var/lib/onionsite` (Windows: `%LOCALAPPDATA%\onionsite\data`) | Database and uploaded files |
 | `ADMIN_PREFIX` | none (required) | URL prefix of the admin area, 10+ characters. The app will not start without it |
 | `OWNER_NOTE` | built-in text | Text on the home page |
 | `MAX_FILE_MB` | `25` | Largest upload. Must not exceed `QUOTA_MB` |
@@ -140,18 +178,21 @@ HiddenServicePort 80 127.0.0.1:8000
 python app.py init       create keys, directories and database
 python app.py setpass    set or change the admin password
 python app.py check      report orphaned, stale or missing files and verify SHA-256 hashes
-python app.py purge      delete old threads, expired sessions and orphans
+python app.py purge      delete old threads, expired sessions, expired downloads and orphans
 python app.py status     print database path, file path and quota
 ```
 
-`check` exits with an error if a file is missing or a hash does not match, so it works well in cron or monitoring. `purge` also scrubs the database write-ahead log after deleting threads.
+`check` exits with an error if a file is missing or a hash does not match, so it works well in cron, Task Scheduler or monitoring. `purge` also scrubs the database write-ahead log after deleting threads.
+
+`purge` handles expired downloads in steps. It scrubs the name, description, size and hash from the database, then securely shreds the stored file. It keeps only a small record (the id and expiry time) for 30 days, so visitors with an old link see an "expired" page instead of "not found".
 
 ## Public pages
 
 | Path | Purpose |
 |---|---|
 | `/` | Notices |
-| `/downloads` | File list |
+| `/downloads` | File list (expired files are hidden) |
+| `/downloads/<id>` | A single file's page, or the "expired" page |
 | `/contact` | How messaging works |
 | `/contact/start` | Write a first message |
 | `/resume` | Return with a Ticket and Key |
@@ -173,5 +214,7 @@ python app.py status     print database path, file path and quota
 - Deleting a thread removes it from the server, but cannot undo anything the operator already read or copied.
 - The app never identifies clients, so rate limits are flood ceilings, not per-user protection. Per-session limits depend on cookies and are easy to bypass. Admin security rests on Argon2 and a strong password.
 - Uploaded downloads can be any file type. Never open or run them on a privileged machine.
+- Secure deletion overwrites files in place, which cannot be guaranteed on SSDs or copy-on-write file systems (btrfs, ZFS). Use full-disk encryption as the real protection.
+- On Windows the app cannot enforce file permissions itself. Protect the secrets and data folders with NTFS permissions.
 - Back up `ONION_SECRETS`. Losing `msg.key` makes stored messages unreadable.
 - Do not commit anything from your secrets or data directories.
